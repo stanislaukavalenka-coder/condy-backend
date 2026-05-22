@@ -165,7 +165,7 @@ app.post('/api/orders', async (req, res) => {
 });
 
 // Обновить заказ
-app.put('/api/orders/:id', authenticateToken, async (req, res) => {
+app.put('/api/orders/:id',  async (req, res) => {
   const orderId = parseInt(req.params.id);
   const updates = req.body;
   const rows = await getSheetData('ЗАКАЗЫ!A:I');
@@ -196,7 +196,7 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
 });
 
 // Удалить заказ
-app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
+app.delete('/api/orders/:id',  async (req, res) => {
   const orderId = parseInt(req.params.id);
   const rows = await getSheetData('ЗАКАЗЫ!A:A');
   let rowIndex = -1;
