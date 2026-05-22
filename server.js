@@ -1,16 +1,15 @@
 require('dotenv').config();
 const express = require('express');
 const { google } = require('googleapis');
-const cors = require('cors');
 const fs = require('fs');
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // разрешаем все запросы для теста
 
 const PORT = process.env.PORT || 3000;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 
+// Загрузка ключа сервисного аккаунта
 let credentials;
 try {
   const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;
@@ -28,6 +27,7 @@ const auth = new google.auth.GoogleAuth({
 
 const sheets = google.sheets({ version: 'v4', auth });
 
+// Вспомогательная функция для безопасного чтения диапазона
 async function getSheetData(range) {
   try {
     const response = await sheets.spreadsheets.values.get({
@@ -36,7 +36,7 @@ async function getSheetData(range) {
     });
     return response.data.values || [];
   } catch (err) {
-    console.error(err.message);
+    console.error(`Ошибка чтения ${range}:`, err.message);
     return [];
   }
 }
@@ -46,23 +46,25 @@ async function appendRow(range, row) {
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
       range,
-      valueInputOption: 'RAW',
+      valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       resource: { values: [row] },
     });
     return true;
   } catch (err) {
-    console.error(err.message);
+    console.error(`Ошибка добавления строки в ${range}:`, err.message);
     return false;
   }
 }
 
+// --- Публичные маршруты ---
 app.get('/ping', (req, res) => {
   res.json({ message: 'Сервер работает' });
 });
 
+// Заказы (чтение)
 app.get('/api/orders', async (req, res) => {
-  const rows = await getSheetData('ЗАКАЗЫ!A2:I');
+  const rows = await getSheetData('ЗАКАЗЫ!A2:H');
   const orders = rows.map(row => ({
     id: row[0],
     created: row[1],
@@ -76,20 +78,26 @@ app.get('/api/orders', async (req, res) => {
   res.json(orders);
 });
 
+// Создание заказа (без авторизации)
 app.post('/api/orders', async (req, res) => {
   const { clientId, price, status, details, delivery, executionDate } = req.body;
+  if (!clientId || !price || !executionDate) {
+    return res.status(400).json({ error: 'Не хватает полей' });
+  }
+  // Определить следующий ID
   const rows = await getSheetData('ЗАКАЗЫ!A:A');
   let lastId = 0;
   rows.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
   const newId = lastId + 1;
   const now = new Date().toISOString();
-  const success = await appendRow('ЗАКАЗЫ!A:I', [
-    newId, now, clientId, price, status, details, delivery, executionDate, ''
+  const success = await appendRow('ЗАКАЗЫ!A:H', [
+    newId, now, clientId, price, status || 'в работе', details || '', delivery || '', executionDate
   ]);
   if (success) res.json({ success: true, orderId: newId });
   else res.status(500).json({ error: 'Ошибка создания заказа' });
 });
 
+// Клиенты
 app.get('/api/clients', async (req, res) => {
   const rows = await getSheetData('КЛИЕНТЫ!A2:E');
   const clients = rows.map(row => ({
@@ -102,6 +110,7 @@ app.get('/api/clients', async (req, res) => {
   res.json(clients);
 });
 
+// Склад
 app.get('/api/stock', async (req, res) => {
   const rows = await getSheetData('СКЛАД!A2:D');
   const stock = rows.map(row => ({
@@ -112,6 +121,7 @@ app.get('/api/stock', async (req, res) => {
   res.json(stock);
 });
 
+// Рецепты
 app.get('/api/recipes', async (req, res) => {
   const rows = await getSheetData('РЕЦЕПТЫ!A2:D');
   const recipes = rows.map(row => ({
@@ -123,6 +133,7 @@ app.get('/api/recipes', async (req, res) => {
   res.json(recipes);
 });
 
+// Финансы
 app.get('/api/finance', async (req, res) => {
   const { startDate, endDate } = req.query;
   const rows = await getSheetData('ФИНАНСЫ!A2:F');
