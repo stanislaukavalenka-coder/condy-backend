@@ -12,6 +12,17 @@ const app = express();
 app.use(express.json());
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
+const cors = require('cors'); // убедитесь, что строка импорта есть вверху
+
+// ... после инициализации app
+
+// Настройка CORS для работы с куками между разными доменами
+const corsOptions = {
+  origin: true,           // разрешить запросы с любого источника (для теста)
+  credentials: true,      // разрешить отправку кук и заголовков авторизации
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // поддержка предварительных запросов OPTIONS
 
 const PORT = process.env.PORT || 3000;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
@@ -337,7 +348,13 @@ app.post('/api/login', async (req, res) => {
   const valid = await bcrypt.compare(password, user[4]);
   if (!valid) return res.status(401).json({ error: 'Неверные учётные данные' });
   const token = jwt.sign({ userId: user[0], name: user[1], email, role: user[3] }, JWT_SECRET, { expiresIn: '30d' });
-  res.cookie('access_token', token, { httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
+  res.cookie('access_token', token, {
+  httpOnly: true,
+  secure: true,          // обязательно для HTTPS
+  sameSite: 'none',      // разрешить кросс-доменную отправку
+  maxAge: 30 * 24 * 60 * 60 * 1000,
+  path: '/'
+});
   res.json({ success: true, name: user[1], role: user[3], email });
 });
 
