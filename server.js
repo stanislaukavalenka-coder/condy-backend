@@ -275,15 +275,38 @@ app.get('/api/finance', async (req, res) => {
     date: row[1],
     type: row[2],
     category: row[3],
-    amount: parseFloat(row[4]),
+    amount: parseFloat(row[4]) || 0,
     comment: row[5],
   }));
   if (startDate && endDate) {
     const start = new Date(startDate);
     const end = new Date(endDate);
+    start.setHours(0,0,0,0);
+    end.setHours(23,59,59,999);
     transactions = transactions.filter(t => {
-      const d = new Date(t.date);
-      return d >= start && d <= end;
+      let d;
+      if (typeof t.date === 'string') {
+        const parts = t.date.split(' ');
+        const dateParts = parts[0].split('.');
+        const timeParts = parts[1] ? parts[1].split(':') : [0,0,0];
+        if (dateParts.length === 3) {
+          d = new Date(
+            parseInt(dateParts[2]),
+            parseInt(dateParts[1]) - 1,
+            parseInt(dateParts[0]),
+            parseInt(timeParts[0]),
+            parseInt(timeParts[1]),
+            parseInt(timeParts[2] || 0)
+          );
+        } else {
+          d = new Date(t.date);
+        }
+      } else if (t.date instanceof Date) {
+        d = t.date;
+      } else {
+        d = new Date(t.date);
+      }
+      return !isNaN(d.getTime()) && d >= start && d <= end;
     });
   }
   const totalIncome = transactions.filter(t => t.type === 'Доход').reduce((s, t) => s + t.amount, 0);
