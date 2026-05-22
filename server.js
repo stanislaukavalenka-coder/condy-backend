@@ -150,7 +150,7 @@ app.get('/api/orders', async (req, res) => {
 });
 
 // Создать заказ (требуется авторизация)
-app.post('/api/orders', authenticateToken, async (req, res) => {
+app.post('/api/orders', async (req, res) => {
   const { clientId, price, status, details, delivery, executionDate } = req.body;
   const rows = await getSheetData('ЗАКАЗЫ!A:A');
   let lastId = 0;
