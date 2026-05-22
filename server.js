@@ -136,7 +136,7 @@ app.get('/api/orders', async (req, res) => {
     id: row[0],
     created: row[1],
     clientId: row[2],
-    price: row[3],
+    price: parseFloat(row[3]) || 0,
     status: row[4],
     details: row[5],
     delivery: row[6],
