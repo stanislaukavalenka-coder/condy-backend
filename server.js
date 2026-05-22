@@ -1,4 +1,5 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const express = require('express');
 const { google } = require('googleapis');
 const cors = require('cors');
@@ -352,3 +353,348 @@ app.post('/api/logout', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
 });
+
+app.post('/api/recipes/calculate', async (req, res) => {
+  const { recipeId, desiredWeight } = req.body;
+  if (!recipeId || !desiredWeight) {
+    return res.status(400).json({ error: 'recipeId и desiredWeight обязательны' });
+  }
+  try {
+    // Получаем рецепт (выход)
+    const recipes = await getSheetData('РЕЦЕПТЫ!A2:D');
+    const recipe = recipes.find(r => parseInt(r[0]) === recipeId);
+    if (!recipe) return res.status(404).json({ error: 'Рецепт не найден' });
+    const recipeYield = parseFloat(recipe[2]); // столбец C (выход в граммах)
+    if (!recipeYield) return res.status(400).json({ error: 'В рецепте не указан выход' });
+
+    const coefficient = desiredWeight / recipeYield;
+
+    // Получаем состав рецепта
+    const composition = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
+    const recipeIngredients = composition.filter(row => parseInt(row[0]) === recipeId);
+    if (recipeIngredients.length === 0) {
+      return res.status(404).json({ error: 'В рецепте нет ингредиентов' });
+    }
+
+    // Получаем список ингредиентов с названиями
+    const ingredients = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
+    const ingMap = new Map();
+    ingredients.forEach(ing => ingMap.set(parseInt(ing[0]), { name: ing[1], unit: ing[3], price: parseFloat(ing[4]) || 0 }));
+
+    const resultIngredients = [];
+    for (const comp of recipeIngredients) {
+      const ingId = parseInt(comp[1]);
+      const amount = parseFloat(comp[2]); // количество в граммах на одну порцию/вес рецепта
+      const needed = amount * coefficient;
+      const ing = ingMap.get(ingId);
+      if (ing) {
+        resultIngredients.push({ name: ing.name, neededGrams: needed });
+      } else {
+        resultIngredients.push({ name: `Ингредиент ID ${ingId}`, neededGrams: needed });
+      }
+    }
+
+    res.json({ coefficient, ingredients: resultIngredients });
+  } catch (err) {
+    console.error('Ошибка при расчёте рецепта:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+app.post('/api/recipes', authenticateToken, async (req, res) => {
+  const { name, yield: recipeYield, ingredients } = req.body;
+  if (!name || !recipeYield || !Array.isArray(ingredients) || ingredients.length === 0) {
+    return res.status(400).json({ error: 'Неполные данные' });
+  }
+
+  try {
+    // 1. Получить следующий ID для рецепта
+    const recipesData = await getSheetData('РЕЦЕПТЫ!A:A');
+    let lastId = 0;
+    recipesData.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
+    const newRecipeId = lastId + 1;
+
+    // 2. Добавить рецепт в лист РЕЦЕПТЫ
+    await appendRow('РЕЦЕПТЫ!A:E', [newRecipeId, name, recipeYield, '', '']);
+
+    // 3. Получить список ингредиентов (справочник)
+    const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
+    const ingByName = new Map();
+    let maxIngId = 0;
+    ingData.forEach(ing => {
+      const id = parseInt(ing[0]);
+      ingByName.set(ing[1], id);
+      if (id > maxIngId) maxIngId = id;
+    });
+
+    const compositionRows = [];
+    const newIngredients = [];
+
+    for (const ing of ingredients) {
+      let ingId = ingByName.get(ing.name);
+      if (!ingId) {
+        // Создаём новый ингредиент
+        maxIngId++;
+        ingId = maxIngId;
+        const defaultUnit = 'г';
+        const defaultPrice = 0;
+        await appendRow('ИНГРЕДИЕНТЫ!A:E', [ingId, ing.name, 'Автосоздан', defaultUnit, defaultPrice]);
+        // Также добавляем в СКЛАД (если есть лист СКЛАД)
+        await appendRow('СКЛАД!A:D', [ingId, ing.name, 0, 0]);
+        ingByName.set(ing.name, ingId);
+        newIngredients.push(ing.name);
+      }
+      compositionRows.push([newRecipeId, ingId, ing.amountG]);
+    }
+
+    // 4. Добавить состав рецепта
+    if (compositionRows.length > 0) {
+      const lastRow = await getSheetData('СОСТАВ_РЕЦЕПТА!A:A');
+      const startRow = lastRow.length + 2; // +2 потому что данные с A2
+      for (const row of compositionRows) {
+        await appendRow('СОСТАВ_РЕЦЕПТА!A:C', row);
+      }
+    }
+
+    let message = `Рецепт "${name}" добавлен с ID ${newRecipeId}.`;
+    if (newIngredients.length > 0) {
+      message += `\n➕ Автоматически добавлены ингредиенты: ${newIngredients.join(', ')} (цена 0, ед.изм. "г")`;
+    }
+    res.json({ success: true, message });
+  } catch (err) {
+    console.error('Ошибка создания рецепта:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.post('/api/stock/transaction', authenticateToken, async (req, res) => {
+  const { materialName, operation, quantity, comment } = req.body;
+  if (!materialName || !operation || !quantity || quantity <= 0) {
+    return res.status(400).json({ error: 'Неверные параметры' });
+  }
+  try {
+    // Найти строку материала в СКЛАД
+    const stockData = await getSheetData('СКЛАД!A:D');
+    let rowIndex = -1;
+    let currentStock = 0;
+    for (let i = 0; i < stockData.length; i++) {
+      if (stockData[i][1] === materialName) {
+        rowIndex = i + 2; // +2 потому что данные с A2
+        currentStock = parseFloat(stockData[i][3]) || 0;
+        break;
+      }
+    }
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: 'Материал не найден' });
+    }
+
+    let newStock;
+    if (operation === 'Приход') {
+      newStock = currentStock + quantity;
+    } else if (operation === 'Расход') {
+      if (currentStock < quantity) {
+        return res.status(400).json({ error: `Недостаточно материала: остаток ${currentStock}` });
+      }
+      newStock = currentStock - quantity;
+    } else {
+      return res.status(400).json({ error: 'Операция должна быть "Приход" или "Расход"' });
+    }
+
+    // Обновить остаток
+    const range = `СКЛАД!D${rowIndex}`;
+    await updateRow('СКЛАД', rowIndex, [stockData[rowIndex-2][0], stockData[rowIndex-2][1], stockData[rowIndex-2][2], newStock]);
+
+    // Добавить запись в ИСТОРИЯ
+    const now = new Date().toISOString();
+    await appendRow('ИСТОРИЯ!A:F', [now, materialName, operation, quantity, newStock, comment || '']);
+
+    res.json({ success: true, message: `${operation} ${quantity} → новый остаток ${newStock}` });
+  } catch (err) {
+    console.error('Ошибка операции со складом:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка' });
+  }
+});
+
+app.post('/api/stock/batch', authenticateToken, async (req, res) => {
+  const operations = req.body; // ожидаем массив { material, operation, quantity, comment }
+  if (!Array.isArray(operations) || operations.length === 0) {
+    return res.status(400).json({ error: 'Нет операций' });
+  }
+
+  const errors = [];
+  const successOps = [];
+
+  for (const op of operations) {
+    try {
+      const { material, operation, quantity, comment } = op;
+      if (!material || !operation || !quantity || quantity <= 0) {
+        errors.push(`Неверные данные для ${material}`);
+        continue;
+      }
+      // Найти строку материала в СКЛАД
+      const stockData = await getSheetData('СКЛАД!A:D');
+      let rowIndex = -1;
+      let currentStock = 0;
+      for (let i = 0; i < stockData.length; i++) {
+        if (stockData[i][1] === material) {
+          rowIndex = i + 2;
+          currentStock = parseFloat(stockData[i][3]) || 0;
+          break;
+        }
+      }
+      if (rowIndex === -1) {
+        errors.push(`Материал "${material}" не найден`);
+        continue;
+      }
+      let newStock;
+      if (operation === 'Приход') {
+        newStock = currentStock + quantity;
+      } else if (operation === 'Расход') {
+        if (currentStock < quantity) {
+          errors.push(`Недостаточно "${material}": остаток ${currentStock}`);
+          continue;
+        }
+        newStock = currentStock - quantity;
+      } else {
+        errors.push(`Некорректная операция для "${material}"`);
+        continue;
+      }
+      // Обновление остатка
+      await updateRow('СКЛАД', rowIndex, [stockData[rowIndex-2][0], stockData[rowIndex-2][1], stockData[rowIndex-2][2], newStock]);
+      // Запись в историю
+      const now = new Date().toISOString();
+      await appendRow('ИСТОРИЯ!A:F', [now, material, operation, quantity, newStock, comment || '']);
+      successOps.push(material);
+    } catch (err) {
+      errors.push(`Ошибка при обработке ${op.material}: ${err.message}`);
+    }
+  }
+
+  if (errors.length > 0) {
+    return res.status(400).json({ success: false, errors });
+  }
+  res.json({ success: true, message: `Выполнено ${successOps.length} операций.` });
+});
+
+// Функции для работы с паролями (аналогично вашим GAS)
+function generateSecurePassword() {
+  const length = 10;
+  const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()";
+  let password = "";
+  for (let i = 0; i < length; i++) {
+    const randomIndex = Math.floor(Math.random() * charset.length);
+    password += charset[randomIndex];
+  }
+  return password;
+}
+
+function deriveKeyAndHash(password, salt) {
+  const combined = password + salt;
+  const digest = crypto.createHash('sha256').update(combined).digest('hex');
+  return digest;
+}
+app.get('/api/users', authenticateToken, async (req, res) => {
+  // Только админ может просматривать
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
+  try {
+    const usersData = await getSheetData('ПОЛЬЗОВАТЕЛИ!A2:H');
+    const users = usersData.map(row => ({
+      id: parseInt(row[0]),
+      name: row[1],
+      email: row[2],
+      role: row[3],
+    }));
+    res.json(users);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка загрузки пользователей' });
+  }
+});
+
+app.post('/api/users', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
+  const { name, email, role } = req.body;
+  if (!name || !email || !role) {
+    return res.status(400).json({ error: 'Не хватает данных' });
+  }
+  try {
+    // Проверка на существование
+    const users = await getSheetData('ПОЛЬЗОВАТЕЛИ!A:C');
+    if (users.some(u => u[2] === email)) {
+      return res.status(400).json({ error: 'Пользователь с таким email уже существует' });
+    }
+    const plainPassword = generateSecurePassword();
+    const salt = generateSecurePassword();
+    const passwordHash = deriveKeyAndHash(plainPassword, salt);
+    // Получить новый ID
+    let lastId = 0;
+    users.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
+    const newId = lastId + 1;
+    // Добавить строку
+    await appendRow('ПОЛЬЗОВАТЕЛИ!A:H', [newId, name, email, role, passwordHash, salt, '', '[]']);
+    // Отправить пароль по email (опционально)
+    // Здесь можно добавить отправку email, например, через nodemailer или другой сервис
+    res.json({ success: true, password: plainPassword });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка создания пользователя' });
+  }
+});
+
+app.delete('/api/users/:id', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
+  const userId = parseInt(req.params.id);
+  try {
+    const usersData = await getSheetData('ПОЛЬЗОВАТЕЛИ!A:A');
+    let rowIndex = -1;
+    for (let i = 0; i < usersData.length; i++) {
+      if (parseInt(usersData[i][0]) === userId) {
+        rowIndex = i + 2;
+        break;
+      }
+    }
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    await deleteRow('ПОЛЬЗОВАТЕЛИ', rowIndex);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка удаления пользователя' });
+  }
+});
+
+app.post('/api/ingredients', authenticateToken, async (req, res) => {
+  const { name, category, unit, price } = req.body;
+  if (!name || !unit || price === undefined) {
+    return res.status(400).json({ error: 'Не хватает данных' });
+  }
+  try {
+    const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
+    // Проверка на дубликат
+    if (ingData.some(row => row[1] === name)) {
+      return res.status(400).json({ error: 'Ингредиент уже существует' });
+    }
+    let lastId = 0;
+    ingData.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
+    const newId = lastId + 1;
+    await appendRow('ИНГРЕДИЕНТЫ!A:E', [newId, name, category || '', unit, price]);
+    // Также добавить в СКЛАД
+    await appendRow('СКЛАД!A:D', [newId, name, 0, 0]);
+    res.json({ success: true, message: `Ингредиент "${name}" добавлен` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка добавления ингредиента' });
+  }
+});
+
+function deriveKeyAndHash(password, salt) {
+  const combined = password + salt;
+  const hash = crypto.createHash('sha256').update(combined).digest('hex');
+  return hash;
+}
