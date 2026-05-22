@@ -12,9 +12,9 @@ const app = express();
 app.use(express.json());
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
-const cors = require('cors'); // убедитесь, что строка импорта есть вверху
 
-// ... после инициализации app
+
+
 
 // Настройка CORS для работы с куками между разными доменами
 const corsOptions = {
