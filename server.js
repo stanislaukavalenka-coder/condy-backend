@@ -12,18 +12,6 @@ const app = express();
 app.use(express.json());
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
-
-
-
-
-// Настройка CORS для работы с куками между разными доменами
-const corsOptions = {
-  origin: true,           // разрешить запросы с любого источника (для теста)
-  credentials: true,      // разрешить отправку кук и заголовков авторизации
-};
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // поддержка предварительных запросов OPTIONS
-
 const PORT = process.env.PORT || 3000;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -710,8 +698,4 @@ app.post('/api/ingredients', authenticateToken, async (req, res) => {
   }
 });
 
-function deriveKeyAndHash(password, salt) {
-  const combined = password + salt;
-  const hash = crypto.createHash('sha256').update(combined).digest('hex');
-  return hash;
-}
+
