@@ -252,19 +252,37 @@ app.get('/api/recipes', async (req, res) => {
 app.get('/api/finance', async (req, res) => {
   const { startDate, endDate } = req.query;
   const rows = await getSheetData('ФИНАНСЫ!A2:F');
-  const transactions = rows.map(row => ({
-    id: row[0],
-    date: row[1],
-    type: row[2],
-    category: row[3],
-    amount: parseFloat(row[4]),
-    comment: row[5],
-  }));
+  const transactions = rows.map(row => {
+    // Преобразуем дату из формата DD.MM.YYYY HH:MM:SS или из строки
+    let dateObj = null;
+    let dateStr = row[1];
+    if (dateStr) {
+      // Попробуем распарсить DD.MM.YYYY
+      let parts = dateStr.split(' ');
+      let dateParts = parts[0].split('.');
+      if (dateParts.length === 3) {
+        dateObj = new Date(dateParts[2], dateParts[1]-1, dateParts[0]);
+      } else {
+        dateObj = new Date(dateStr);
+      }
+    }
+    return {
+      id: row[0],
+      date: dateObj ? dateObj.toISOString() : null,
+      type: row[2],
+      category: row[3],
+      amount: parseFloat(row[4]) || 0,
+      comment: row[5] || '',
+    };
+  });
+  // Фильтрация по диапазону, если задан
   let filtered = transactions;
   if (startDate && endDate) {
     const start = new Date(startDate);
     const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
     filtered = transactions.filter(t => {
+      if (!t.date) return false;
       const d = new Date(t.date);
       return d >= start && d <= end;
     });
@@ -278,7 +296,6 @@ app.get('/api/finance', async (req, res) => {
     profit: totalIncome - totalExpense,
   });
 });
-
 // Регистрация пользователя
 app.post('/api/register', async (req, res) => {
   const { name, email, password, role = 'user' } = req.body;
