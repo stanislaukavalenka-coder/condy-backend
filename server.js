@@ -272,7 +272,32 @@ app.get('/api/finance', async (req, res) => {
   const rows = await getSheetData('ФИНАНСЫ!A2:F');
   let transactions = rows.map(row => ({
     id: row[0],
-    date: row[1],
+    let rawDate = row[1];
+let isoDate = null;
+if (typeof rawDate === 'string') {
+  const parts = rawDate.split(' ');
+  const dateParts = parts[0].split('.');
+  if (dateParts.length === 3) {
+    const year = parseInt(dateParts[2]);
+    const month = parseInt(dateParts[1]) - 1;
+    const day = parseInt(dateParts[0]);
+    let hour = 0, minute = 0, second = 0;
+    if (parts[1]) {
+      const timeParts = parts[1].split(':');
+      hour = parseInt(timeParts[0]);
+      minute = parseInt(timeParts[1]);
+      second = parseInt(timeParts[2] || 0);
+    }
+    const d = new Date(year, month, day, hour, minute, second);
+    isoDate = d.toISOString();
+  } else {
+    isoDate = rawDate;
+  }
+} else if (rawDate instanceof Date) {
+  isoDate = rawDate.toISOString();
+} else {
+  isoDate = rawDate;
+}
     type: row[2],
     category: row[3],
     amount: parseFloat(row[4]) || 0,
