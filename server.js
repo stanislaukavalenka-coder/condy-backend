@@ -287,18 +287,7 @@ app.get('/api/finance', async (req, res) => {
     comment: row[5],
   }));
 
-  if (startDate && endDate) {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    start.setHours(0,0,0,0);
-    end.setHours(23,59,59,999);
-    transactions = transactions.filter(t => {
-      const d = new Date(t.date);
-      return !isNaN(d.getTime()) && d >= start && d <= end;
-    });
-  }
-
-  const totalIncome = transactions.filter(t => t.type === 'Доход').reduce((s, t) => s + t.amount, 0);
+    const totalIncome = transactions.filter(t => t.type === 'Доход').reduce((s, t) => s + t.amount, 0);
   const totalExpense = transactions.filter(t => t.type === 'Расход').reduce((s, t) => s + t.amount, 0);
   res.json({
     transactions,
