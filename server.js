@@ -387,8 +387,11 @@ app.post('/api/login', async (req, res) => {
   if (!user) return res.status(401).json({ error: 'Неверные учётные данные' });
   const valid = await bcrypt.compare(password, user[4]);
   if (!valid) return res.status(401).json({ error: 'Неверные учётные данные' });
-  const token = jwt.sign({ userId: user[0], name: user[1], email, role: user[3] }, JWT_SECRET, { expiresIn: '30d' });
-  // Не устанавливаем httpOnly куку, а возвращаем токен в теле
+  const token = jwt.sign(
+    { userId: user[0], name: user[1], email, role: user[3] },
+    JWT_SECRET,
+    { expiresIn: '30d' }
+  );
   res.json({ success: true, name: user[1], role: user[3], email, token });
 });
 
