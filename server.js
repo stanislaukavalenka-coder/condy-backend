@@ -181,6 +181,11 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
     }
   }
   if (rowIndex === -1) return res.status(404).json({ error: 'Заказ не найден' });
+
+  const oldStatus = oldRow[4];
+  const newStatus = updates.status;
+
+  // Обновляем заказ
   const newRow = [
     oldRow[0],
     oldRow[1],
@@ -193,26 +198,44 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
     req.user.userId,
   ];
   const success = await updateRow('ЗАКАЗЫ', rowIndex, newRow);
-  if (success) res.json({ success: true });
-  else res.status(500).json({ error: 'Ошибка обновления заказа' });
-});
+  if (!success) return res.status(500).json({ error: 'Ошибка обновления заказа' });
 
+  // Если статус меняется с "оплачен" на другой (кроме "оплачен") – удаляем транзакцию дохода
+  if (oldStatus === 'оплачен' && newStatus !== 'оплачен') {
+    await deleteTransactionByOrderId(orderId);
+  }
+
+  // Сохраняем снимок заказа в историю
+  await saveOrderSnapshot(orderId, req.user.userId);
+
+  res.json({ success: true });
+});
 app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.id);
-  const rows = await getSheetData('ЗАКАЗЫ!A:A');
+  const ordersData = await getSheetData('ЗАКАЗЫ!A:I');
   let rowIndex = -1;
-  for (let i = 0; i < rows.length; i++) {
-    if (parseInt(rows[i][0]) === orderId) {
+  let orderStatus = null;
+  for (let i = 0; i < ordersData.length; i++) {
+    if (parseInt(ordersData[i][0]) === orderId) {
       rowIndex = i + 2;
+      orderStatus = ordersData[i][4];
       break;
     }
   }
   if (rowIndex === -1) return res.status(404).json({ error: 'Заказ не найден' });
-  const success = await deleteRow('ЗАКАЗЫ', rowIndex);
-  if (success) res.json({ success: true });
-  else res.status(500).json({ error: 'Ошибка удаления заказа' });
-});
 
+  // Сохраняем снимок перед удалением (чтобы знать, что заказ был удалён)
+  await saveOrderSnapshot(orderId, req.user.userId);
+
+  if (orderStatus === 'оплачен') {
+    await deleteTransactionByOrderId(orderId);
+  }
+
+  const success = await deleteRow('ЗАКАЗЫ', rowIndex);
+  if (!success) return res.status(500).json({ error: 'Ошибка удаления заказа' });
+
+  res.json({ success: true });
+});
 // ---------- КЛИЕНТЫ ----------
 app.get('/api/clients', async (req, res) => {
   const rows = await getSheetData('КЛИЕНТЫ!A2:E');
@@ -694,5 +717,46 @@ app.post('/api/ingredients', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Ошибка добавления ингредиента' });
   }
 });
+
+async function deleteTransactionByOrderId(orderId) {
+  const rows = await getSheetData('ФИНАНСЫ!A2:G');
+  let rowIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    // Ищем транзакцию, у которой в поле comment или reference_id есть упоминание заказа
+    const comment = rows[i][5] || '';
+    if (comment.includes(`заказа #${orderId}`) || comment.includes(`Оплата заказа #${orderId}`)) {
+      rowIndex = i + 2; // +2 из-за A2
+      break;
+    }
+  }
+  if (rowIndex !== -1) {
+    await deleteRow('ФИНАНСЫ', rowIndex);
+  }
+}
+async function saveOrderSnapshot(orderId, userId) {
+  const rows = await getSheetData('ЗАКАЗЫ!A2:I');
+  let orderRow = null;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === orderId) {
+      orderRow = rows[i];
+      break;
+    }
+  }
+  if (!orderRow) return;
+
+  const now = new Date().toISOString();
+  // порядок полей: ID_заказа, Дата_изменения, Пользователь, ID_клиента, Цена, Статус, Подробности, Доставка, Дата_выполнения
+  await appendRow('ИСТОРИЯ_ЗАКАЗОВ_СНАПШОТЫ!A:I', [
+    orderId,
+    now,
+    userId,
+    orderRow[2],  // ID_клиента
+    orderRow[3],  // Цена
+    orderRow[4],  // Статус
+    orderRow[5],  // Подробности
+    orderRow[6],  // Доставка
+    orderRow[7]   // Дата_выполнения
+  ]);
+}
 
 
