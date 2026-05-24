@@ -167,6 +167,30 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   else res.status(500).json({ error: 'Ошибка создания заказа' });
 });
 
+async function createTransactionForOrder(orderId, price, clientId) {
+  // Получаем имя клиента для комментария
+  const clients = await getSheetData('КЛИЕНТЫ!A2:E');
+  const client = clients.find(c => parseInt(c[0]) === clientId);
+  const clientName = client ? client[1] : 'Неизвестный';
+
+  // Получаем следующий ID для транзакции
+  const financeRows = await getSheetData('ФИНАНСЫ!A:A');
+  let lastId = 0;
+  financeRows.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
+  const newId = lastId + 1;
+  const now = new Date().toISOString();
+
+  await appendRow('ФИНАНСЫ!A:G', [
+    newId,
+    now,
+    'Доход',
+    'Заказ',
+    price,
+    `Оплата заказа #${orderId} (${clientName})`,
+    orderId   // опционально: ID заказа для связи
+  ]);
+}
+
 app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.id);
   const updates = req.body;
@@ -184,13 +208,15 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
 
   const oldStatus = oldRow[4];
   const newStatus = updates.status;
+  const newPrice = updates.price !== undefined ? updates.price : oldRow[3];
+  const newClientId = updates.clientId !== undefined ? updates.clientId : oldRow[2];
 
   // Обновляем заказ
   const newRow = [
     oldRow[0],
     oldRow[1],
-    updates.clientId !== undefined ? updates.clientId : oldRow[2],
-    updates.price !== undefined ? updates.price : oldRow[3],
+    newClientId,
+    newPrice,
     updates.status !== undefined ? updates.status : oldRow[4],
     updates.details !== undefined ? updates.details : oldRow[5],
     updates.delivery !== undefined ? updates.delivery : oldRow[6],
@@ -200,8 +226,12 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const success = await updateRow('ЗАКАЗЫ', rowIndex, newRow);
   if (!success) return res.status(500).json({ error: 'Ошибка обновления заказа' });
 
-  // Если статус меняется с "оплачен" на другой (кроме "оплачен") – удаляем транзакцию дохода
-  if (oldStatus === 'оплачен' && newStatus !== 'оплачен') {
+  // Обработка финансовых транзакций
+  if (oldStatus !== 'оплачен' && newStatus === 'оплачен') {
+    // Создаём транзакцию дохода
+    await createTransactionForOrder(orderId, newPrice, newClientId);
+  } else if (oldStatus === 'оплачен' && newStatus !== 'оплачен') {
+    // Удаляем транзакцию дохода (при отмене оплаты)
     await deleteTransactionByOrderId(orderId);
   }
 
