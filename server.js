@@ -211,7 +211,7 @@ async function createTransactionForOrder(orderId, price, clientId) {
 app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.id);
   const updates = req.body;
-  const rows = await getSheetData('ЗАКАЗЫ!A:I');
+  const rows = await getSheetData('ЗАКАЗЫ!A2:I');
   let rowIndex = -1;
   let oldRow = null;
   for (let i = 0; i < rows.length; i++) {
@@ -225,37 +225,38 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
 
   const oldStatus = oldRow[4];
   const newStatus = updates.status;
-  const newPrice = updates.price !== undefined ? updates.price : oldRow[3];
-  const newClientId = updates.clientId !== undefined ? updates.clientId : oldRow[2];
+  const newPrice = updates.price !== undefined ? parseFloat(updates.price) : parseFloat(oldRow[3]);
+  
+  // Обработка клиента
+  let finalClientId = updates.clientId !== undefined ? parseInt(updates.clientId) : (oldRow[2] ? parseInt(oldRow[2]) : null);
+  if (updates.clientName || updates.clientPhone || updates.clientAddress) {
+    finalClientId = await findOrCreateClient(updates.clientName, updates.clientPhone, updates.clientAddress);
+  }
 
   // Обновляем заказ
   const newRow = [
-    oldRow[0],
+    Number(oldRow[0]),
     oldRow[1],
-    newClientId,
+    finalClientId,
     newPrice,
-    updates.status !== undefined ? updates.status : oldRow[4],
+    newStatus !== undefined ? newStatus : oldRow[4],
     updates.details !== undefined ? updates.details : oldRow[5],
     updates.delivery !== undefined ? updates.delivery : oldRow[6],
     updates.executionDate !== undefined ? updates.executionDate : oldRow[7],
     req.user.userId,
   ];
+
   const success = await updateRow('ЗАКАЗЫ', rowIndex, newRow);
   if (!success) return res.status(500).json({ error: 'Ошибка обновления заказа' });
 
-  // Обработка финансовых транзакций
-  // Создаём транзакцию, если статус меняется на "оплачен" или "завершен" (и ранее не был оплачен)
+  // Финансовые транзакции
   if (oldStatus !== 'оплачен' && (newStatus === 'оплачен' || newStatus === 'завершен')) {
-    await createTransactionForOrder(orderId, newPrice, newClientId);
-  } 
-  // Удаляем транзакцию, если статус меняется с "оплачен" на любой другой (кроме "оплачен")
-  else if (oldStatus === 'оплачен' && newStatus !== 'оплачен') {
+    await createTransactionForOrder(orderId, newPrice, finalClientId);
+  } else if (oldStatus === 'оплачен' && newStatus !== 'оплачен') {
     await deleteTransactionByOrderId(orderId);
   }
 
-  // Сохраняем снимок заказа в историю
   await saveOrderSnapshot(orderId, req.user.userId);
-
   res.json({ success: true });
 });
 app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
@@ -808,57 +809,52 @@ async function saveOrderSnapshot(orderId, userId) {
 }
 
 async function findOrCreateClient(name, phone, address) {
-  // Нормализация (убираем "Аноним", "не указан", пустые строки)
   const hasName = name && name.trim() !== '' && name.trim() !== 'Аноним';
   const hasPhone = phone && phone.trim() !== '' && phone.trim() !== 'не указан';
   const hasAddress = address && address.trim() !== '';
 
-  // Если нет ни одного заполненного поля – возвращаем null (клиент не нужен)
-  if (!hasName && !hasPhone && !hasAddress) {
-    return null;
-  }
+  if (!hasName && !hasPhone && !hasAddress) return null;
 
-  // Поиск существующего клиента (приоритет: телефон → имя → соцсети)
+  // Поиск существующего клиента
+  const clients = await getSheetData('КЛИЕНТЫ!A2:E');
   let client = null;
   if (hasPhone) {
-    const normalizedPhone = normalizePhone(phone); // ваша функция нормализации
-    client = await findClientByPhone(normalizedPhone);
+    const normalizedPhone = phone.replace(/[^0-9+]/g, '');
+    client = clients.find(c => c[2] && c[2].replace(/[^0-9+]/g, '') === normalizedPhone);
   }
   if (!client && hasName) {
-    client = await findClientByName(name);
+    client = clients.find(c => c[1] === name);
   }
   if (!client && hasAddress) {
-    client = await findClientByAddress(address);
+    client = clients.find(c => c[3] === address);
   }
 
   if (client) {
-    // Обновляем недостающие поля (если в переданных есть данные, а у клиента нет)
+    // Обновляем недостающие поля
+    const clientId = Number(client[0]);
     let needUpdate = false;
-    if (hasName && (!client.name || client.name === 'Аноним')) {
-      client.name = name;
+    if (hasName && (!client[1] || client[1] === 'Аноним')) {
+      client[1] = name;
       needUpdate = true;
     }
-    if (hasPhone && (!client.phone || client.phone === 'не указан')) {
-      client.phone = normalizePhone(phone);
+    if (hasPhone && (!client[2] || client[2] === 'не указан')) {
+      client[2] = phone.replace(/[^0-9+]/g, '');
       needUpdate = true;
     }
-    if (hasAddress && (!client.address)) {
-      client.address = address;
+    if (hasAddress && !client[3]) {
+      client[3] = address;
       needUpdate = true;
     }
     if (needUpdate) {
-      await updateClient(client.id, { name: client.name, phone: client.phone, address: client.address });
+      await updateRow('КЛИЕНТЫ', clientId + 1, [clientId, client[1], client[2], client[3], client[4]]);
     }
-    return client.id;
+    return clientId;
   } else {
     // Создаём нового клиента
-    const newId = await createClient({
-      name: hasName ? name : '',
-      phone: hasPhone ? normalizePhone(phone) : '',
-      address: hasAddress ? address : ''
-    });
+    const ids = clients.map(c => Number(c[0])).filter(id => !isNaN(id));
+    const newId = ids.length ? Math.max(...ids) + 1 : 1;
+    await appendRow('КЛИЕНТЫ!A:E', [newId, hasName ? name : '', hasPhone ? phone.replace(/[^0-9+]/g, '') : '', hasAddress ? address : '', '']);
     return newId;
   }
 }
-
 
