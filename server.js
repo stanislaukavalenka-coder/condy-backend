@@ -226,7 +226,7 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const oldStatus = oldRow[4];
   const newStatus = updates.status;
   const newPrice = updates.price !== undefined ? parseFloat(updates.price) : parseFloat(oldRow[3]);
-  
+
   // Обработка клиента
   let finalClientId = updates.clientId !== undefined ? parseInt(updates.clientId) : (oldRow[2] ? parseInt(oldRow[2]) : null);
   if (updates.clientName || updates.clientPhone || updates.clientAddress) {
@@ -250,23 +250,18 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   if (!success) return res.status(500).json({ error: 'Ошибка обновления заказа' });
 
   // Финансовые транзакции
-  // Создание транзакции
-const shouldCreate = (oldStatus !== 'оплачен' && oldStatus !== 'завершен') && 
-                     (newStatus === 'оплачен' || newStatus === 'завершен');
+  const shouldCreate = (oldStatus !== 'оплачен' && oldStatus !== 'завершен') &&
+                       (newStatus === 'оплачен' || newStatus === 'завершен');
 
-// Удаление транзакции
-const shouldDelete = 
-  // из оплачен в любой, кроме оплачен и завершен (т.е. в работу или отменён)
-  (oldStatus === 'оплачен' && newStatus !== 'оплачен' && newStatus !== 'завершен') ||
-  // из завершен в работу или отменён
-  (oldStatus === 'завершен' && (newStatus === 'в работе' || newStatus === 'отменён'));
+  const shouldDelete =
+    (oldStatus === 'оплачен' && newStatus !== 'оплачен' && newStatus !== 'завершен') ||
+    (oldStatus === 'завершен' && (newStatus === 'в работе' || newStatus === 'отменён'));
 
-if (shouldCreate) {
-  await createTransactionForOrder(orderId, newPrice, newClientId);
-} else if (shouldDelete) {
-  await deleteTransactionByOrderId(orderId);
-}
-// Во всех остальных случаях (например, оплачен ↔ завершен) транзакция не меняется
+  if (shouldCreate) {
+    await createTransactionForOrder(orderId, newPrice, finalClientId);
+  } else if (shouldDelete) {
+    await deleteTransactionByOrderId(orderId);
+  }
 
   await saveOrderSnapshot(orderId, req.user.userId);
   res.json({ success: true });
@@ -320,6 +315,60 @@ app.post('/api/clients', authenticateToken, async (req, res) => {
   if (success) res.json({ success: true, id: newId });
   else res.status(500).json({ error: 'Ошибка создания клиента' });
 });
+
+/**
+ * Создаёт транзакцию дохода для заказа
+ * @param {number} orderId - ID заказа
+ * @param {number} price - сумма
+ * @param {number|null} clientId - ID клиента (может быть null)
+ */
+async function createTransactionForOrder(orderId, price, clientId) {
+  // Получаем текущие ID транзакций, чтобы вычислить следующий
+  const financeRows = await getSheetData('ФИНАНСЫ!A:A');
+  let lastId = 0;
+  financeRows.forEach(row => {
+    const id = parseInt(row[0]);
+    if (!isNaN(id) && id > lastId) lastId = id;
+  });
+  const newId = lastId + 1;
+
+  const now = new Date().toISOString();
+  const comment = `Оплата заказа #${orderId}`;
+
+  // Добавляем строку в лист ФИНАНСЫ (столбцы A–G)
+  const success = await appendRow('ФИНАНСЫ!A:G', [
+    newId,          // A: ID транзакции
+    now,            // B: дата/время
+    'Доход',        // C: тип
+    'Заказ',        // D: категория
+    price,          // E: сумма
+    comment,        // F: комментарий
+    orderId         // G: ID заказа (для связи)
+  ]);
+  if (!success) console.error(`Не удалось создать транзакцию для заказа ${orderId}`);
+}
+
+/**
+ * Удаляет транзакцию дохода, связанную с заказом (по полю G)
+ * @param {number} orderId - ID заказа
+ */
+async function deleteTransactionByOrderId(orderId) {
+  const rows = await getSheetData('ФИНАНСЫ!A2:G');
+  let rowIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    // Ищем транзакцию, у которой в столбце G (индекс 6) стоит orderId
+    if (parseInt(rows[i][6]) === orderId) {
+      rowIndex = i + 2; // +2, потому что данные с A2
+      break;
+    }
+  }
+  if (rowIndex === -1) {
+    console.log(`Транзакция для заказа ${orderId} не найдена, удаление не требуется`);
+    return;
+  }
+  const success = await deleteRow('ФИНАНСЫ', rowIndex);
+  if (!success) console.error(`Ошибка удаления транзакции для заказа ${orderId}`);
+}
 
 app.put('/api/clients/:id', authenticateToken, async (req, res) => {
   const clientId = parseInt(req.params.id);
