@@ -250,11 +250,23 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   if (!success) return res.status(500).json({ error: 'Ошибка обновления заказа' });
 
   // Финансовые транзакции
-  if (oldStatus !== 'оплачен' && (newStatus === 'оплачен' || newStatus === 'завершен')) {
-    await createTransactionForOrder(orderId, newPrice, finalClientId);
-  } else if (oldStatus === 'оплачен' && newStatus !== 'оплачен') {
-    await deleteTransactionByOrderId(orderId);
-  }
+  // Создание транзакции
+const shouldCreate = (oldStatus !== 'оплачен' && oldStatus !== 'завершен') && 
+                     (newStatus === 'оплачен' || newStatus === 'завершен');
+
+// Удаление транзакции
+const shouldDelete = 
+  // из оплачен в любой, кроме оплачен и завершен (т.е. в работу или отменён)
+  (oldStatus === 'оплачен' && newStatus !== 'оплачен' && newStatus !== 'завершен') ||
+  // из завершен в работу или отменён
+  (oldStatus === 'завершен' && (newStatus === 'в работе' || newStatus === 'отменён'));
+
+if (shouldCreate) {
+  await createTransactionForOrder(orderId, newPrice, newClientId);
+} else if (shouldDelete) {
+  await deleteTransactionByOrderId(orderId);
+}
+// Во всех остальных случаях (например, оплачен ↔ завершен) транзакция не меняется
 
   await saveOrderSnapshot(orderId, req.user.userId);
   res.json({ success: true });
