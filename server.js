@@ -154,17 +154,34 @@ app.get('/api/orders', async (req, res) => {
 });
 
 app.post('/api/orders', authenticateToken, async (req, res) => {
-  const { clientId, price, status, details, delivery, executionDate } = req.body;
+  // Изменяем: принимаем поля клиента вместо clientId
+  const { clientName, clientPhone, clientAddress, price, status, details, delivery, executionDate } = req.body;
+
+  // 1. Получаем или создаём клиента (может вернуть null)
+  const clientId = await findOrCreateClient(clientName, clientPhone, clientAddress);
+
+  // 2. Генерируем новый ID заказа
   const rows = await getSheetData('ЗАКАЗЫ!A:A');
   let lastId = 0;
   rows.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
   const newId = lastId + 1;
   const now = new Date().toISOString();
+
+  // 3. Добавляем строку в ЗАКАЗЫ (clientId может быть null – тогда в таблице будет пусто или 0)
   const success = await appendRow('ЗАКАЗЫ!A:I', [
-    newId, now, clientId, price, status, details, delivery, executionDate, req.user.userId
+    newId, now, clientId || '', price, status, details, delivery, executionDate, req.user.userId
   ]);
-  if (success) res.json({ success: true, orderId: newId });
-  else res.status(500).json({ error: 'Ошибка создания заказа' });
+  if (!success) return res.status(500).json({ error: 'Ошибка создания заказа' });
+
+  // 4. Если статус "оплачен" или "завершен" – создаём финансовую транзакцию
+  if (status === 'оплачен' || status === 'завершен') {
+    await createTransactionForOrder(newId, price, clientId);
+  }
+
+  // 5. Сохраняем снимок заказа в историю
+  await saveOrderSnapshot(newId, req.user.userId);
+
+  res.json({ success: true, orderId: newId });
 });
 
 async function createTransactionForOrder(orderId, price, clientId) {
@@ -227,11 +244,12 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   if (!success) return res.status(500).json({ error: 'Ошибка обновления заказа' });
 
   // Обработка финансовых транзакций
-  if (oldStatus !== 'оплачен' && newStatus === 'оплачен') {
-    // Создаём транзакцию дохода
+  // Создаём транзакцию, если статус меняется на "оплачен" или "завершен" (и ранее не был оплачен)
+  if (oldStatus !== 'оплачен' && (newStatus === 'оплачен' || newStatus === 'завершен')) {
     await createTransactionForOrder(orderId, newPrice, newClientId);
-  } else if (oldStatus === 'оплачен' && newStatus !== 'оплачен') {
-    // Удаляем транзакцию дохода (при отмене оплаты)
+  } 
+  // Удаляем транзакцию, если статус меняется с "оплачен" на любой другой (кроме "оплачен")
+  else if (oldStatus === 'оплачен' && newStatus !== 'оплачен') {
     await deleteTransactionByOrderId(orderId);
   }
 
@@ -787,6 +805,60 @@ async function saveOrderSnapshot(orderId, userId) {
     orderRow[6],  // Доставка
     orderRow[7]   // Дата_выполнения
   ]);
+}
+
+async function findOrCreateClient(name, phone, address) {
+  // Нормализация (убираем "Аноним", "не указан", пустые строки)
+  const hasName = name && name.trim() !== '' && name.trim() !== 'Аноним';
+  const hasPhone = phone && phone.trim() !== '' && phone.trim() !== 'не указан';
+  const hasAddress = address && address.trim() !== '';
+
+  // Если нет ни одного заполненного поля – возвращаем null (клиент не нужен)
+  if (!hasName && !hasPhone && !hasAddress) {
+    return null;
+  }
+
+  // Поиск существующего клиента (приоритет: телефон → имя → соцсети)
+  let client = null;
+  if (hasPhone) {
+    const normalizedPhone = normalizePhone(phone); // ваша функция нормализации
+    client = await findClientByPhone(normalizedPhone);
+  }
+  if (!client && hasName) {
+    client = await findClientByName(name);
+  }
+  if (!client && hasAddress) {
+    client = await findClientByAddress(address);
+  }
+
+  if (client) {
+    // Обновляем недостающие поля (если в переданных есть данные, а у клиента нет)
+    let needUpdate = false;
+    if (hasName && (!client.name || client.name === 'Аноним')) {
+      client.name = name;
+      needUpdate = true;
+    }
+    if (hasPhone && (!client.phone || client.phone === 'не указан')) {
+      client.phone = normalizePhone(phone);
+      needUpdate = true;
+    }
+    if (hasAddress && (!client.address)) {
+      client.address = address;
+      needUpdate = true;
+    }
+    if (needUpdate) {
+      await updateClient(client.id, { name: client.name, phone: client.phone, address: client.address });
+    }
+    return client.id;
+  } else {
+    // Создаём нового клиента
+    const newId = await createClient({
+      name: hasName ? name : '',
+      phone: hasPhone ? normalizePhone(phone) : '',
+      address: hasAddress ? address : ''
+    });
+    return newId;
+  }
 }
 
 
