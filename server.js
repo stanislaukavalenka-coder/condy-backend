@@ -211,6 +211,8 @@ async function createTransactionForOrder(orderId, price, clientId) {
 app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.id);
   const updates = req.body;
+  console.log('🔍 Получен запрос на обновление заказа:', orderId, updates);
+
   const rows = await getSheetData('ЗАКАЗЫ!A2:I');
   let rowIndex = -1;
   let oldRow = null;
@@ -239,19 +241,19 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
     let newPhone = hasPhone ? updates.clientPhone.trim() : null;
     let newAddress = hasAddress ? updates.clientAddress.trim() : null;
 
-    // Приводим пустые значения к null
     if (newName === '' || newName === 'Аноним') newName = null;
     if (newPhone === '' || newPhone === 'не указан') newPhone = null;
     if (newAddress === '') newAddress = null;
 
     if (newName === null && newPhone === null && newAddress === null) {
       finalClientId = null;
+      console.log('Все поля клиента пусты – отвязываем заказ');
     } else {
-      // Ищем существующего клиента по переданным данным или создаём нового
+      console.log('Ищем/создаём клиента с данными:', { newName, newPhone, newAddress });
       finalClientId = await findOrCreateClient(newName, newPhone, newAddress);
+      console.log('Результат findOrCreateClient: clientId =', finalClientId);
     }
   }
-  // -------------------------------------
 
   // Обновляем заказ
   const newRow = [
@@ -269,7 +271,7 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const success = await updateRow('ЗАКАЗЫ', rowIndex, newRow);
   if (!success) return res.status(500).json({ error: 'Ошибка обновления заказа' });
 
-  // Финансовые транзакции
+  // Финансовые транзакции (ваша логика)
   const shouldCreate = (oldStatus !== 'оплачен' && oldStatus !== 'завершен') &&
                        (newStatus === 'оплачен' || newStatus === 'завершен');
   const shouldDelete =
@@ -283,6 +285,7 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   }
 
   await saveOrderSnapshot(orderId, req.user.userId);
+  console.log('✅ Заказ обновлён, новый clientId =', finalClientId);
   res.json({ success: true });
 });
 app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
@@ -907,11 +910,15 @@ async function saveOrderSnapshot(orderId, userId) {
 }
 
 async function findOrCreateClient(name, phone, address) {
+  console.log('🔍 findOrCreateClient вызвана с:', { name, phone, address });
   const hasName = name && name.trim() !== '' && name.trim() !== 'Аноним';
   const hasPhone = phone && phone.trim() !== '' && phone.trim() !== 'не указан';
   const hasAddress = address && address.trim() !== '';
 
-  if (!hasName && !hasPhone && !hasAddress) return null;
+  if (!hasName && !hasPhone && !hasAddress) {
+    console.log('Нет данных клиента, возвращаем null');
+    return null;
+  }
 
   const clients = await getSheetData('КЛИЕНТЫ!A2:E');
   let client = null;
@@ -926,6 +933,7 @@ async function findOrCreateClient(name, phone, address) {
       if (cPhone === normalizedPhone) {
         client = c;
         clientRowIndex = i + 2;
+        console.log('Найден по телефону, строка', clientRowIndex);
         break;
       }
     }
@@ -936,6 +944,7 @@ async function findOrCreateClient(name, phone, address) {
       if (clients[i][1] === name) {
         client = clients[i];
         clientRowIndex = i + 2;
+        console.log('Найден по имени, строка', clientRowIndex);
         break;
       }
     }
@@ -946,13 +955,13 @@ async function findOrCreateClient(name, phone, address) {
       if (clients[i][3] === address) {
         client = clients[i];
         clientRowIndex = i + 2;
+        console.log('Найден по соцсетям, строка', clientRowIndex);
         break;
       }
     }
   }
 
   if (client) {
-    // Обновляем недостающие поля (но не трогаем ID)
     const clientId = Number(client[0]);
     let needUpdate = false;
     if (hasName && (!client[1] || client[1] === 'Аноним')) {
@@ -969,6 +978,7 @@ async function findOrCreateClient(name, phone, address) {
     }
     if (needUpdate && clientRowIndex !== -1) {
       await updateRow('КЛИЕНТЫ', clientRowIndex, [clientId, client[1], client[2], client[3], client[4]]);
+      console.log('Клиент обновлён');
     }
     return clientId;
   } else {
@@ -982,10 +992,10 @@ async function findOrCreateClient(name, phone, address) {
       hasAddress ? address : '',
       ''
     ]);
+    console.log('Создан новый клиент с ID', newId);
     return newId;
   }
 }
-
 async function updateClientData(clientId, name, phone, address) {
   const rows = await getSheetData('КЛИЕНТЫ!A2:E');
   let rowIndex = -1;
