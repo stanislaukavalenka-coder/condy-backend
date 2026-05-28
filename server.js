@@ -268,25 +268,31 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
 });
 app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.id);
-  const ordersData = await getSheetData('ЗАКАЗЫ!A:I');
+
+  // Получаем данные заказа перед удалением
+  const ordersData = await getSheetData('ЗАКАЗЫ!A2:I');
   let rowIndex = -1;
-  let orderStatus = null;
+  let orderRow = null;
   for (let i = 0; i < ordersData.length; i++) {
     if (parseInt(ordersData[i][0]) === orderId) {
-      rowIndex = i + 2;
-      orderStatus = ordersData[i][4];
+      rowIndex = i + 2;        // абсолютный номер строки (т.к. данные с A2)
+      orderRow = ordersData[i];
       break;
     }
   }
   if (rowIndex === -1) return res.status(404).json({ error: 'Заказ не найден' });
 
-  // Сохраняем снимок перед удалением (чтобы знать, что заказ был удалён)
-  await saveOrderSnapshot(orderId, req.user.userId);
+  const orderStatus = orderRow[4]; // статус заказа
 
+  // 1. Если заказ был оплачен, удаляем финансовую транзакцию
   if (orderStatus === 'оплачен') {
     await deleteTransactionByOrderId(orderId);
   }
 
+  // 2. Сохраняем снимок заказа в историю (последнее состояние перед удалением)
+  await saveOrderSnapshot(orderId, req.user.userId);
+
+  // 3. Удаляем заказ из таблицы
   const success = await deleteRow('ЗАКАЗЫ', rowIndex);
   if (!success) return res.status(500).json({ error: 'Ошибка удаления заказа' });
 
