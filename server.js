@@ -228,27 +228,30 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const newPrice = updates.price !== undefined ? parseFloat(updates.price) : parseFloat(oldRow[3]);
 
   // ---------- ОБРАБОТКА КЛИЕНТА ----------
-let finalClientId = oldRow[2] ? parseInt(oldRow[2]) : null;
+  let finalClientId = oldRow[2] ? parseInt(oldRow[2]) : null;
 
-if (updates.clientName !== undefined || updates.clientPhone !== undefined || updates.clientAddress !== undefined) {
-  let newName = updates.clientName !== undefined ? updates.clientName.trim() : null;
-  let newPhone = updates.clientPhone !== undefined ? updates.clientPhone.trim() : null;
-  let newAddress = updates.clientAddress !== undefined ? updates.clientAddress.trim() : null;
+  const hasName = updates.clientName !== undefined;
+  const hasPhone = updates.clientPhone !== undefined;
+  const hasAddress = updates.clientAddress !== undefined;
 
-  // Если все поля пустые или равны "Аноним"/"не указан" – отвязываем заказ
-  const isEmpty = (!newName || newName === 'Аноним') && (!newPhone || newPhone === 'не указан') && !newAddress;
-  if (isEmpty) {
-    finalClientId = null;
-  } else {
-    if (finalClientId) {
-      // Обновляем существующего клиента
-      await updateClientData(finalClientId, newName, newPhone, newAddress);
+  if (hasName || hasPhone || hasAddress) {
+    let newName = hasName ? updates.clientName.trim() : null;
+    let newPhone = hasPhone ? updates.clientPhone.trim() : null;
+    let newAddress = hasAddress ? updates.clientAddress.trim() : null;
+
+    // Приводим пустые значения к null
+    if (newName === '' || newName === 'Аноним') newName = null;
+    if (newPhone === '' || newPhone === 'не указан') newPhone = null;
+    if (newAddress === '') newAddress = null;
+
+    if (newName === null && newPhone === null && newAddress === null) {
+      finalClientId = null;
     } else {
-      // Ищем или создаём клиента
+      // Ищем существующего клиента по переданным данным или создаём нового
       finalClientId = await findOrCreateClient(newName, newPhone, newAddress);
     }
   }
-}
+  // -------------------------------------
 
   // Обновляем заказ
   const newRow = [
@@ -269,7 +272,6 @@ if (updates.clientName !== undefined || updates.clientPhone !== undefined || upd
   // Финансовые транзакции
   const shouldCreate = (oldStatus !== 'оплачен' && oldStatus !== 'завершен') &&
                        (newStatus === 'оплачен' || newStatus === 'завершен');
-
   const shouldDelete =
     (oldStatus === 'оплачен' && newStatus !== 'оплачен' && newStatus !== 'завершен') ||
     (oldStatus === 'завершен' && (newStatus === 'в работе' || newStatus === 'отменён'));
@@ -911,12 +913,11 @@ async function findOrCreateClient(name, phone, address) {
 
   if (!hasName && !hasPhone && !hasAddress) return null;
 
-  // Получаем всех клиентов (данные с A2)
   const clients = await getSheetData('КЛИЕНТЫ!A2:E');
   let client = null;
-  let clientRowIndex = -1; // для запоминания строки
+  let clientRowIndex = -1;
 
-  // Поиск существующего клиента
+  // Поиск по телефону
   if (hasPhone) {
     const normalizedPhone = phone.replace(/[^0-9+]/g, '');
     for (let i = 0; i < clients.length; i++) {
@@ -929,21 +930,21 @@ async function findOrCreateClient(name, phone, address) {
       }
     }
   }
+  // Поиск по имени
   if (!client && hasName) {
     for (let i = 0; i < clients.length; i++) {
-      const c = clients[i];
-      if (c[1] === name) {
-        client = c;
+      if (clients[i][1] === name) {
+        client = clients[i];
         clientRowIndex = i + 2;
         break;
       }
     }
   }
+  // Поиск по соцсетям
   if (!client && hasAddress) {
     for (let i = 0; i < clients.length; i++) {
-      const c = clients[i];
-      if (c[3] === address) {
-        client = c;
+      if (clients[i][3] === address) {
+        client = clients[i];
         clientRowIndex = i + 2;
         break;
       }
@@ -951,7 +952,7 @@ async function findOrCreateClient(name, phone, address) {
   }
 
   if (client) {
-    // Обновляем недостающие поля
+    // Обновляем недостающие поля (но не трогаем ID)
     const clientId = Number(client[0]);
     let needUpdate = false;
     if (hasName && (!client[1] || client[1] === 'Аноним')) {
@@ -1005,4 +1006,17 @@ async function updateClientData(clientId, name, phone, address) {
     oldRow[4] || '' // notes
   ];
   return await updateRow('КЛИЕНТЫ', rowIndex, newRow);
+}
+async function createClient(name, phone, address) {
+  const clients = await getSheetData('КЛИЕНТЫ!A2:E');
+  const ids = clients.map(c => Number(c[0])).filter(id => !isNaN(id));
+  const newId = ids.length ? Math.max(...ids) + 1 : 1;
+  await appendRow('КЛИЕНТЫ!A:E', [
+    newId,
+    name || '',
+    phone ? phone.replace(/[^0-9+]/g, '') : '',
+    address || '',
+    ''
+  ]);
+  return newId;
 }
