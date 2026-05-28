@@ -227,11 +227,28 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const newStatus = updates.status;
   const newPrice = updates.price !== undefined ? parseFloat(updates.price) : parseFloat(oldRow[3]);
 
-  // Обработка клиента
-  let finalClientId = updates.clientId !== undefined ? parseInt(updates.clientId) : (oldRow[2] ? parseInt(oldRow[2]) : null);
-  if (updates.clientName || updates.clientPhone || updates.clientAddress) {
-    finalClientId = await findOrCreateClient(updates.clientName, updates.clientPhone, updates.clientAddress);
+  // ---------- ОБРАБОТКА КЛИЕНТА ----------
+let finalClientId = oldRow[2] ? parseInt(oldRow[2]) : null;
+
+if (updates.clientName !== undefined || updates.clientPhone !== undefined || updates.clientAddress !== undefined) {
+  let newName = updates.clientName !== undefined ? updates.clientName.trim() : null;
+  let newPhone = updates.clientPhone !== undefined ? updates.clientPhone.trim() : null;
+  let newAddress = updates.clientAddress !== undefined ? updates.clientAddress.trim() : null;
+
+  // Если все поля пустые или равны "Аноним"/"не указан" – отвязываем заказ
+  const isEmpty = (!newName || newName === 'Аноним') && (!newPhone || newPhone === 'не указан') && !newAddress;
+  if (isEmpty) {
+    finalClientId = null;
+  } else {
+    if (finalClientId) {
+      // Обновляем существующего клиента
+      await updateClientData(finalClientId, newName, newPhone, newAddress);
+    } else {
+      // Ищем или создаём клиента
+      finalClientId = await findOrCreateClient(newName, newPhone, newAddress);
+    }
   }
+}
 
   // Обновляем заказ
   const newRow = [
@@ -379,16 +396,28 @@ async function deleteTransactionByOrderId(orderId) {
 app.put('/api/clients/:id', authenticateToken, async (req, res) => {
   const clientId = parseInt(req.params.id);
   const { name, phone, address, notes } = req.body;
-  const rows = await getSheetData('КЛИЕНТЫ!A:E');
+  
+  const rows = await getSheetData('КЛИЕНТЫ!A2:E');
   let rowIndex = -1;
+  let oldRow = null;
   for (let i = 0; i < rows.length; i++) {
     if (parseInt(rows[i][0]) === clientId) {
       rowIndex = i + 2;
+      oldRow = rows[i];
       break;
     }
   }
   if (rowIndex === -1) return res.status(404).json({ error: 'Клиент не найден' });
-  const newRow = [clientId, name, phone || '', address || '', notes || ''];
+  
+  // Обновляем только те поля, которые пришли в запросе (не перезаписываем остальные)
+  const newRow = [
+    clientId,
+    name !== undefined ? name : oldRow[1],
+    phone !== undefined ? phone : oldRow[2],
+    address !== undefined ? address : oldRow[3],
+    notes !== undefined ? notes : oldRow[4],
+  ];
+  
   const success = await updateRow('КЛИЕНТЫ', rowIndex, newRow);
   if (success) res.json({ success: true });
   else res.status(500).json({ error: 'Ошибка обновления клиента' });
@@ -882,18 +911,43 @@ async function findOrCreateClient(name, phone, address) {
 
   if (!hasName && !hasPhone && !hasAddress) return null;
 
-  // Поиск существующего клиента
+  // Получаем всех клиентов (данные с A2)
   const clients = await getSheetData('КЛИЕНТЫ!A2:E');
   let client = null;
+  let clientRowIndex = -1; // для запоминания строки
+
+  // Поиск существующего клиента
   if (hasPhone) {
     const normalizedPhone = phone.replace(/[^0-9+]/g, '');
-    client = clients.find(c => c[2] && c[2].replace(/[^0-9+]/g, '') === normalizedPhone);
+    for (let i = 0; i < clients.length; i++) {
+      const c = clients[i];
+      const cPhone = c[2] ? c[2].replace(/[^0-9+]/g, '') : '';
+      if (cPhone === normalizedPhone) {
+        client = c;
+        clientRowIndex = i + 2;
+        break;
+      }
+    }
   }
   if (!client && hasName) {
-    client = clients.find(c => c[1] === name);
+    for (let i = 0; i < clients.length; i++) {
+      const c = clients[i];
+      if (c[1] === name) {
+        client = c;
+        clientRowIndex = i + 2;
+        break;
+      }
+    }
   }
   if (!client && hasAddress) {
-    client = clients.find(c => c[3] === address);
+    for (let i = 0; i < clients.length; i++) {
+      const c = clients[i];
+      if (c[3] === address) {
+        client = c;
+        clientRowIndex = i + 2;
+        break;
+      }
+    }
   }
 
   if (client) {
@@ -912,16 +966,43 @@ async function findOrCreateClient(name, phone, address) {
       client[3] = address;
       needUpdate = true;
     }
-    if (needUpdate) {
-      await updateRow('КЛИЕНТЫ', clientId + 1, [clientId, client[1], client[2], client[3], client[4]]);
+    if (needUpdate && clientRowIndex !== -1) {
+      await updateRow('КЛИЕНТЫ', clientRowIndex, [clientId, client[1], client[2], client[3], client[4]]);
     }
     return clientId;
   } else {
     // Создаём нового клиента
     const ids = clients.map(c => Number(c[0])).filter(id => !isNaN(id));
     const newId = ids.length ? Math.max(...ids) + 1 : 1;
-    await appendRow('КЛИЕНТЫ!A:E', [newId, hasName ? name : '', hasPhone ? phone.replace(/[^0-9+]/g, '') : '', hasAddress ? address : '', '']);
+    await appendRow('КЛИЕНТЫ!A:E', [
+      newId,
+      hasName ? name : '',
+      hasPhone ? phone.replace(/[^0-9+]/g, '') : '',
+      hasAddress ? address : '',
+      ''
+    ]);
     return newId;
   }
 }
 
+async function updateClientData(clientId, name, phone, address) {
+  const rows = await getSheetData('КЛИЕНТЫ!A2:E');
+  let rowIndex = -1;
+  let oldRow = null;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === clientId) {
+      rowIndex = i + 2;
+      oldRow = rows[i];
+      break;
+    }
+  }
+  if (rowIndex === -1) return false;
+  const newRow = [
+    clientId,
+    (name !== undefined && name !== null) ? name : (oldRow[1] || ''),
+    (phone !== undefined && phone !== null) ? phone : (oldRow[2] || ''),
+    (address !== undefined && address !== null) ? address : (oldRow[3] || ''),
+    oldRow[4] || '' // notes
+  ];
+  return await updateRow('КЛИЕНТЫ', rowIndex, newRow);
+}
