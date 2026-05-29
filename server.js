@@ -71,6 +71,7 @@ async function appendRow(range, row) {
 }
 
 async function updateRow(range, rowNumber, values) {
+  console.log(`🔄 updateRow вызвана: лист="${range}", строка=${rowNumber}, значения:`, values);
   try {
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
@@ -78,9 +79,10 @@ async function updateRow(range, rowNumber, values) {
       valueInputOption: 'RAW',
       resource: { values: [values] },
     });
+    console.log(`✅ updateRow успешно обновила строку ${rowNumber} в листе ${range}`);
     return true;
   } catch (err) {
-    console.error(`Ошибка обновления строки ${rowNumber}:`, err.message);
+    console.error(`❌ Ошибка обновления строки ${rowNumber}:`, err.message);
     return false;
   }
 }
@@ -211,8 +213,8 @@ async function createTransactionForOrder(orderId, price, clientId) {
 app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.id);
   const updates = req.body;
-  console.log('🔍 Получен запрос на обновление заказа:', orderId, updates);
-
+  console.log('📥 Получен запрос на обновление заказа:', req.body);
+  
   const rows = await getSheetData('ЗАКАЗЫ!A2:I');
   let rowIndex = -1;
   let oldRow = null;
@@ -230,6 +232,12 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const newPrice = updates.price !== undefined ? parseFloat(updates.price) : parseFloat(oldRow[3]);
 
   // ---------- ОБРАБОТКА КЛИЕНТА ----------
+
+  console.log('🔍 Полученные данные клиента из запроса:', {
+  clientName: updates.clientName,
+  clientPhone: updates.clientPhone,
+  clientAddress: updates.clientAddress
+});
   let finalClientId = oldRow[2] ? parseInt(oldRow[2]) : null;
 
   const hasName = updates.clientName !== undefined;
