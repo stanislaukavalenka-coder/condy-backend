@@ -238,14 +238,14 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   clientPhone: updates.clientPhone,
   clientAddress: updates.clientAddress
 });
-  let finalClientId = oldRow[2] ? parseInt(oldRow[2]) : null;
+  let finalClientId = oldRow[2] && oldRow[2] !== '' ? parseInt(oldRow[2]) : null;
 
   const hasName = updates.clientName !== undefined;
   const hasPhone = updates.clientPhone !== undefined;
   const hasAddress = updates.clientAddress !== undefined;
 
   if (hasName || hasPhone || hasAddress) {
-    let newName = hasName ? updates.clientName.trim() : null;
+    let newName = hasName ? (updates.clientName ? updates.clientName.trim() : null) : null;
     let newPhone = hasPhone ? updates.clientPhone.trim() : null;
     let newAddress = hasAddress ? updates.clientAddress.trim() : null;
 
@@ -531,6 +531,14 @@ app.get('/api/me', authenticateToken, (req, res) => {
 app.post('/api/logout', (req, res) => {
   res.clearCookie('access_token');
   res.json({ success: true });
+});
+
+
+process.on('uncaughtException', (err) => {
+  console.error('❌ Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection:', reason);
 });
 
 app.listen(PORT, () => {
