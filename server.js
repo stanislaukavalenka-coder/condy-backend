@@ -926,58 +926,32 @@ async function saveOrderSnapshot(orderId, userId) {
 }
 
 async function findOrCreateClient(name, phone, address) {
-  console.log('🔍 findOrCreateClient вызвана с:', { name, phone, address });
   const hasName = name && name.trim() !== '' && name.trim() !== 'Аноним';
   const hasPhone = phone && phone.trim() !== '' && phone.trim() !== 'не указан';
   const hasAddress = address && address.trim() !== '';
 
-  if (!hasName && !hasPhone && !hasAddress) {
-    console.log('Нет данных клиента, возвращаем null');
-    return null;
-  }
+  if (!hasName && !hasPhone && !hasAddress) return null;
 
-  const clients = await getSheetData('КЛИЕНТЫ!A2:E');
   let client = null;
   let clientRowIndex = -1;
 
-  // Поиск по телефону
+  // Поиск ТОЛЬКО по телефону (если указан)
   if (hasPhone) {
     const normalizedPhone = phone.replace(/[^0-9+]/g, '');
+    const clients = await getSheetData('КЛИЕНТЫ!A2:E');
     for (let i = 0; i < clients.length; i++) {
       const c = clients[i];
       const cPhone = c[2] ? c[2].replace(/[^0-9+]/g, '') : '';
       if (cPhone === normalizedPhone) {
         client = c;
         clientRowIndex = i + 2;
-        console.log('Найден по телефону, строка', clientRowIndex);
-        break;
-      }
-    }
-  }
-  // Поиск по имени
-  if (!client && hasName) {
-    for (let i = 0; i < clients.length; i++) {
-      if (clients[i][1] === name) {
-        client = clients[i];
-        clientRowIndex = i + 2;
-        console.log('Найден по имени, строка', clientRowIndex);
-        break;
-      }
-    }
-  }
-  // Поиск по соцсетям
-  if (!client && hasAddress) {
-    for (let i = 0; i < clients.length; i++) {
-      if (clients[i][3] === address) {
-        client = clients[i];
-        clientRowIndex = i + 2;
-        console.log('Найден по соцсетям, строка', clientRowIndex);
         break;
       }
     }
   }
 
   if (client) {
+    // Найден по телефону – обновляем имя и соцсети (если они пустые)
     const clientId = Number(client[0]);
     let needUpdate = false;
     if (hasName && (!client[1] || client[1] === 'Аноним')) {
@@ -994,11 +968,11 @@ async function findOrCreateClient(name, phone, address) {
     }
     if (needUpdate && clientRowIndex !== -1) {
       await updateRow('КЛИЕНТЫ', clientRowIndex, [clientId, client[1], client[2], client[3], client[4]]);
-      console.log('Клиент обновлён');
     }
     return clientId;
   } else {
-    // Создаём нового клиента
+    // Телефон не найден – создаём нового клиента
+    const clients = await getSheetData('КЛИЕНТЫ!A2:E');
     const ids = clients.map(c => Number(c[0])).filter(id => !isNaN(id));
     const newId = ids.length ? Math.max(...ids) + 1 : 1;
     await appendRow('КЛИЕНТЫ!A:E', [
@@ -1008,7 +982,6 @@ async function findOrCreateClient(name, phone, address) {
       hasAddress ? address : '',
       ''
     ]);
-    console.log('Создан новый клиент с ID', newId);
     return newId;
   }
 }
