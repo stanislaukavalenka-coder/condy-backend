@@ -306,7 +306,7 @@ app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   let orderRow = null;
   for (let i = 0; i < ordersData.length; i++) {
     if (parseInt(ordersData[i][0]) === orderId) {
-      rowIndex = i + 2;        // абсолютный номер строки (т.к. данные с A2)
+      rowIndex = i + 2;
       orderRow = ordersData[i];
       break;
     }
@@ -323,7 +323,15 @@ app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   // 2. Сохраняем снимок заказа в историю (последнее состояние перед удалением)
   await saveOrderSnapshot(orderId, req.user.userId);
 
-  // 3. Удаляем заказ из таблицы
+  // 3. Удаляем все товары заказа из ЗАКАЗЫ_ТОВАРЫ
+  const orderProductsRows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
+  for (let i = 0; i < orderProductsRows.length; i++) {
+    if (parseInt(orderProductsRows[i][0]) === orderId) {
+      await deleteRow('ЗАКАЗЫ_ТОВАРЫ', i + 2);
+    }
+  }
+
+  // 4. Удаляем заказ из таблицы ЗАКАЗЫ
   const success = await deleteRow('ЗАКАЗЫ', rowIndex);
   if (!success) return res.status(500).json({ error: 'Ошибка удаления заказа' });
 
