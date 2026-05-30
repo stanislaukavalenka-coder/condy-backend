@@ -156,15 +156,10 @@ app.get('/api/orders', async (req, res) => {
 });
 
 app.post('/api/orders', authenticateToken, async (req, res) => {
-  let clientId = req.body.clientId ? parseInt(req.body.clientId) : null;
-  if (!clientId) {
-    console.error('❌ clientId не передан или равен null');
-    return res.status(400).json({ error: 'Не указан клиент' });
-  }
-  // Изменяем: принимаем поля клиента вместо clientId
+  // Принимаем поля клиента и заказа
   const { clientName, clientPhone, clientAddress, price, status, details, delivery, executionDate } = req.body;
 
-  // 1. Получаем или создаём клиента (может вернуть null)
+  // 1. Получаем или создаём клиента (может вернуть null, если все три поля пустые)
   const clientId = await findOrCreateClient(clientName, clientPhone, clientAddress);
 
   // 2. Генерируем новый ID заказа
