@@ -172,7 +172,7 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   // 3. Добавляем строку в ЗАКАЗЫ (clientId может быть null – тогда в таблице будет пусто или 0)
   console.log('🔍 clientId из findOrCreateClient:', clientId, typeof clientId);
   const success = await appendRow('ЗАКАЗЫ!A:I', [
-    newId, now, clientId || '', price, status, details, delivery, executionDate, req.user.userId
+    newId, now, clientId !== null ? clientId : '', price, status, details, delivery, executionDate, req.user.userId
   ]);
   if (!success) return res.status(500).json({ error: 'Ошибка создания заказа' });
 
@@ -927,6 +927,7 @@ async function saveOrderSnapshot(orderId, userId) {
 }
 
 async function findOrCreateClient(name, phone, address) {
+  console.log('findOrCreateClient args:', { name, phone, address });
   const hasName = name && name.trim() !== '' && name.trim() !== 'Аноним';
   const hasPhone = phone && phone.trim() !== '' && phone.trim() !== 'не указан';
   const hasAddress = address && address.trim() !== '';
