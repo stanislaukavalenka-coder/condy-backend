@@ -1111,3 +1111,34 @@ app.delete('/api/products/:id', authenticateToken, async (req, res) => {
   if (success) res.json({ success: true });
   else res.status(500).json({ error: 'Ошибка удаления товара' });
 });
+app.put('/api/categories/:id', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
+  const catId = parseInt(req.params.id);
+  const { name } = req.body;
+  const rows = await getSheetData('КАТЕГОРИИ!A2:C');
+  let rowIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === catId) {
+      rowIndex = i + 2;
+      break;
+    }
+  }
+  if (rowIndex === -1) return res.status(404).json({ error: 'Категория не найдена' });
+  await updateRow('КАТЕГОРИИ', rowIndex, [catId, name, rows[rowIndex-2][2] || 0]);
+  res.json({ success: true });
+});
+app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
+  const catId = parseInt(req.params.id);
+  const rows = await getSheetData('КАТЕГОРИИ!A:A');
+  let rowIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === catId) {
+      rowIndex = i + 2;
+      break;
+    }
+  }
+  if (rowIndex === -1) return res.status(404).json({ error: 'Категория не найдена' });
+  await deleteRow('КАТЕГОРИИ', rowIndex);
+  res.json({ success: true });
+});
