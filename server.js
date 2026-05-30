@@ -1142,3 +1142,8 @@ app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
   await deleteRow('КАТЕГОРИИ', rowIndex);
   res.json({ success: true });
 });
+app.post('/api/order-products', authenticateToken, async (req, res) => {
+  const { orderId, productId, quantity, price } = req.body;
+  await appendRow('ЗАКАЗЫ_ТОВАРЫ!A:D', [orderId, productId, quantity, price]);
+  res.json({ success: true });
+});
