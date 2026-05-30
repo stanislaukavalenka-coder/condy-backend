@@ -170,6 +170,7 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   const now = new Date().toISOString();
 
   // 3. Добавляем строку в ЗАКАЗЫ (clientId может быть null – тогда в таблице будет пусто или 0)
+  console.log('🔍 clientId из findOrCreateClient:', clientId, typeof clientId);
   const success = await appendRow('ЗАКАЗЫ!A:I', [
     newId, now, clientId || '', price, status, details, delivery, executionDate, req.user.userId
   ]);
