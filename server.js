@@ -1019,3 +1019,95 @@ async function createClient(name, phone, address) {
   ]);
   return newId;
 }
+// ---------- КАТЕГОРИИ ----------
+app.get('/api/categories', async (req, res) => {
+  const rows = await getSheetData('КАТЕГОРИИ!A2:C');
+  const categories = rows.map(row => ({ id: parseInt(row[0]), name: row[1], sortOrder: parseInt(row[2]) || 0 }));
+  res.json(categories);
+});
+
+app.post('/api/categories', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: 'Название обязательно' });
+  const rows = await getSheetData('КАТЕГОРИИ!A:A');
+  let lastId = 0;
+  rows.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
+  const newId = lastId + 1;
+  await appendRow('КАТЕГОРИИ!A:C', [newId, name, 0]);
+  res.json({ success: true, id: newId });
+});
+
+// ---------- ТОВАРЫ ----------
+app.get('/api/products', async (req, res) => {
+  const rows = await getSheetData('ТОВАРЫ!A2:G');
+  const products = rows.map(row => ({
+    id: parseInt(row[0]),
+    categoryId: parseInt(row[1]),
+    name: row[2],
+    price: parseFloat(row[3]),
+    description: row[4] || '',
+    isActive: row[5] === 'TRUE' || row[5] === true,
+    createdAt: row[6]
+  }));
+  res.json(products);
+});
+
+app.post('/api/products', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
+  const { categoryId, name, price, description } = req.body;
+  if (!categoryId || !name || !price) return res.status(400).json({ error: 'Не хватает данных' });
+  const rows = await getSheetData('ТОВАРЫ!A:A');
+  let lastId = 0;
+  rows.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
+  const newId = lastId + 1;
+  const now = new Date().toISOString();
+  await appendRow('ТОВАРЫ!A:G', [newId, categoryId, name, price, description || '', true, now]);
+  res.json({ success: true, id: newId });
+});
+
+app.put('/api/products/:id', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
+  const productId = parseInt(req.params.id);
+  const { categoryId, name, price, description, isActive } = req.body;
+  const rows = await getSheetData('ТОВАРЫ!A2:G');
+  let rowIndex = -1;
+  let oldRow = null;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === productId) {
+      rowIndex = i + 2;
+      oldRow = rows[i];
+      break;
+    }
+  }
+  if (rowIndex === -1) return res.status(404).json({ error: 'Товар не найден' });
+  const newRow = [
+    productId,
+    categoryId !== undefined ? categoryId : oldRow[1],
+    name !== undefined ? name : oldRow[2],
+    price !== undefined ? price : oldRow[3],
+    description !== undefined ? description : oldRow[4],
+    isActive !== undefined ? isActive : oldRow[5],
+    oldRow[6]
+  ];
+  const success = await updateRow('ТОВАРЫ', rowIndex, newRow);
+  if (success) res.json({ success: true });
+  else res.status(500).json({ error: 'Ошибка обновления товара' });
+});
+
+app.delete('/api/products/:id', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
+  const productId = parseInt(req.params.id);
+  const rows = await getSheetData('ТОВАРЫ!A:A');
+  let rowIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === productId) {
+      rowIndex = i + 2;
+      break;
+    }
+  }
+  if (rowIndex === -1) return res.status(404).json({ error: 'Товар не найден' });
+  const success = await deleteRow('ТОВАРЫ', rowIndex);
+  if (success) res.json({ success: true });
+  else res.status(500).json({ error: 'Ошибка удаления товара' });
+});
