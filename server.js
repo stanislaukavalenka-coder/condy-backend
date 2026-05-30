@@ -1054,7 +1054,9 @@ app.get('/api/products', async (req, res) => {
 });
 
 app.post('/api/products', authenticateToken, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
+  if (req.user.role !== 'admin' && req.user.role !== 'manager') {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
   const { categoryId, name, price, description } = req.body;
   if (!categoryId || !name || !price) return res.status(400).json({ error: 'Не хватает данных' });
   const rows = await getSheetData('ТОВАРЫ!A:A');
@@ -1142,8 +1144,34 @@ app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
   await deleteRow('КАТЕГОРИИ', rowIndex);
   res.json({ success: true });
 });
+// Добавить товар к заказу
 app.post('/api/order-products', authenticateToken, async (req, res) => {
   const { orderId, productId, quantity, price } = req.body;
   await appendRow('ЗАКАЗЫ_ТОВАРЫ!A:D', [orderId, productId, quantity, price]);
+  res.json({ success: true });
+});
+// Получить товары заказа
+app.get('/api/order-products/:orderId', authenticateToken, async (req, res) => {
+  const orderId = parseInt(req.params.orderId);
+  const rows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
+  const products = rows.filter(row => parseInt(row[0]) === orderId).map(row => ({
+    productId: parseInt(row[1]),
+    quantity: parseFloat(row[2]),
+    price: parseFloat(row[3])
+  }));
+  res.json(products);
+});
+
+// Удалить все товары заказа (перед обновлением)
+app.delete('/api/order-products/:orderId', authenticateToken, async (req, res) => {
+  const orderId = parseInt(req.params.orderId);
+  const rows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
+  const rowsToDelete = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === orderId) rowsToDelete.push(i + 2);
+  }
+  for (const row of rowsToDelete.reverse()) {
+    await deleteRow('ЗАКАЗЫ_ТОВАРЫ', row);
+  }
   res.json({ success: true });
 });
