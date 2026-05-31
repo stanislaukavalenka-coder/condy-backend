@@ -142,16 +142,16 @@ app.get('/ping', (req, res) => {
 // ---------- ЗАКАЗЫ ----------
 app.get('/api/orders', async (req, res) => {
   const rows = await getSheetData('ЗАКАЗЫ!A2:I');
-  const orders = rows.map(row => ({
-    id: row[0],
-    created: row[1],
-    clientId: row[2],
-    price: parseFloat(row[3]) || 0,
-    status: row[4],
-    details: row[5],
-    delivery: row[6],
-    executionDate: row[7],
-  }));
+const orders = rows.map(row => ({
+  id: row[0],
+  created: row[1],
+  clientId: row[2],
+  price: parsePrice(row[3]),   // ← вместо parseFloat
+  status: row[4],
+  details: row[5],
+  delivery: row[6],
+  executionDate: row[7],
+}));
   res.json(orders);
 });
 
@@ -1055,7 +1055,7 @@ app.get('/api/products', async (req, res) => {
     id: parseInt(row[0]),
     categoryId: parseInt(row[1]),
     name: row[2],
-    price: parseFloat(row[3]),
+    price: parsePrice(row[3]),
     description: row[4] || '',
     isActive: row[5] === 'TRUE' || row[5] === true,
     createdAt: row[6]
@@ -1167,7 +1167,7 @@ app.get('/api/order-products/:orderId', authenticateToken, async (req, res) => {
   const products = rows.filter(row => parseInt(row[0]) === orderId).map(row => ({
     productId: parseInt(row[1]),
     quantity: parseFloat(row[2]),
-    price: parseFloat(row[3])
+    price: parsePrice(row[3])
   }));
   res.json(products);
 });
@@ -1185,3 +1185,10 @@ app.delete('/api/order-products/:orderId', authenticateToken, async (req, res) =
   }
   res.json({ success: true });
 });
+function parsePrice(value) {
+  if (value === undefined || value === null) return 0;
+  if (typeof value === 'number') return value;
+  let str = String(value).trim().replace(',', '.');
+  let num = parseFloat(str);
+  return isNaN(num) ? 0 : num;
+}
