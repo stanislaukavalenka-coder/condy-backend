@@ -182,7 +182,8 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   }
 
   // 5. Сохраняем снимок заказа в историю
-  await saveOrderSnapshot(newId, req.user.userId);
+  const products = await getOrderProductsWithNames(newId);
+await saveOrderSnapshot(newId, req.user.userId, req.user.name, products);
 
   res.json({ success: true, orderId: newId });
 });
@@ -293,7 +294,8 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
     await deleteTransactionByOrderId(orderId);
   }
 
-  await saveOrderSnapshot(orderId, req.user.userId);
+  const products = await getOrderProductsWithNames(orderId);
+await saveOrderSnapshot(orderId, req.user.userId, req.user.name, products);
   console.log('✅ Заказ обновлён, новый clientId =', finalClientId);
   res.json({ success: true });
 });
@@ -321,7 +323,8 @@ app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   }
 
   // 2. Сохраняем снимок заказа в историю (последнее состояние перед удалением)
-  await saveOrderSnapshot(orderId, req.user.userId);
+  const products = await getOrderProductsWithNames(orderId);
+await saveOrderSnapshot(orderId, req.user.userId, req.user.name, products);
 
   // 3. Удаляем все товары заказа из ЗАКАЗЫ_ТОВАРЫ
   const orderProductsRows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
@@ -908,7 +911,7 @@ async function deleteTransactionByOrderId(orderId) {
     await deleteRow('ФИНАНСЫ', rowIndex);
   }
 }
-async function saveOrderSnapshot(orderId, userId) {
+async function saveOrderSnapshot(orderId, userId, userName, products) {
   const rows = await getSheetData('ЗАКАЗЫ!A2:I');
   let orderRow = null;
   for (let i = 0; i < rows.length; i++) {
@@ -920,17 +923,24 @@ async function saveOrderSnapshot(orderId, userId) {
   if (!orderRow) return;
 
   const now = new Date().toISOString();
-  // порядок полей: ID_заказа, Дата_изменения, Пользователь, ID_клиента, Цена, Статус, Подробности, Доставка, Дата_выполнения
-  await appendRow('ИСТОРИЯ_ЗАКАЗОВ_СНАПШОТЫ!A:I', [
-    orderId,
-    now,
-    userId,
-    orderRow[2],  // ID_клиента
-    orderRow[3],  // Цена
-    orderRow[4],  // Статус
-    orderRow[5],  // Подробности
-    orderRow[6],  // Доставка
-    orderRow[7]   // Дата_выполнения
+  const productsJson = JSON.stringify(products.map(p => ({
+    name: p.name,
+    quantity: p.quantity,
+    price: p.price
+  })));
+
+  await appendRow('ИСТОРИЯ_ЗАКАЗОВ_СНАПШОТЫ!A:K', [
+    orderId,            // A
+    now,                // B
+    userId,             // C (число)
+    orderRow[2],        // D clientId
+    orderRow[3],        // E price
+    orderRow[4],        // F status
+    orderRow[5],        // G details
+    orderRow[6],        // H delivery
+    orderRow[7],        // I executionDate
+    userName,           // J (имя)
+    productsJson        // K (JSON товаров)
   ]);
 }
 
@@ -1199,21 +1209,48 @@ function formatPriceInput(inputElement) {
   // Форматируем с двумя знаками, затем заменяем точку на запятую для отображения (опционально)
   inputElement.value = num.toFixed(2).replace('.', ',');
 }
-app.get('/api/order-history/:orderId', authenticateToken, async (req, res) => {
+app.get('/api/order-history-full/:orderId', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.orderId);
-  const rows = await getSheetData('ИСТОРИЯ_ЗАКАЗОВ_СНАПШОТЫ!A2:I');
+  const rows = await getSheetData('ИСТОРИЯ_ЗАКАЗОВ_СНАПШОТЫ!A2:K');
   const history = rows
     .filter(row => parseInt(row[0]) === orderId)
-    .map(row => ({
-      changedAt: row[1],
-      userId: row[2],
-      clientId: row[3],
-      price: parseFloat(row[4]),
-      status: row[5],
-      details: row[6],
-      delivery: row[7],
-      executionDate: row[8]
-    }))
+    .map(row => {
+      let products = [];
+      try {
+        products = JSON.parse(row[10] || '[]');
+      } catch(e) {}
+      return {
+        changedAt: row[1],
+        userName: row[9] || `Пользователь ${row[2]}`, // J – имя, если пусто, то берём из C (userId)
+        clientId: row[3],
+        price: parseFloat(row[4]),
+        status: row[5],
+        details: row[6],
+        delivery: row[7],
+        executionDate: row[8],
+        userId: parseInt(row[2]),
+        products: products
+      };
+    })
     .sort((a,b) => new Date(b.changedAt) - new Date(a.changedAt));
   res.json(history);
 });
+async function getOrderProductsWithNames(orderId) {
+  const productsRows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
+  const orderProducts = productsRows.filter(row => parseInt(row[0]) === orderId);
+  const allProducts = await getSheetData('ТОВАРЫ!A2:G');
+  const productMap = new Map();
+  allProducts.forEach(p => productMap.set(parseInt(p[0]), p[2])); // id -> name
+  const result = [];
+  for (const op of orderProducts) {
+    const productId = parseInt(op[1]);
+    let name = productMap.get(productId);
+    if (!name) name = `Товар #${productId}`;
+    result.push({
+      name: name,
+      quantity: parseFloat(op[2]),
+      price: parseFloat(op[3])
+    });
+  }
+  return result;
+}
