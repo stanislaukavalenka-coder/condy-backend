@@ -1192,3 +1192,10 @@ function parsePrice(value) {
   let num = parseFloat(str);
   return isNaN(num) ? 0 : num;
 }
+function formatPriceInput(inputElement) {
+  let raw = inputElement.value.trim().replace(',', '.');
+  let num = parseFloat(raw);
+  if (isNaN(num)) num = 0;
+  // Форматируем с двумя знаками, затем заменяем точку на запятую для отображения (опционально)
+  inputElement.value = num.toFixed(2).replace('.', ',');
+}
