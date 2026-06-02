@@ -1199,3 +1199,21 @@ function formatPriceInput(inputElement) {
   // Форматируем с двумя знаками, затем заменяем точку на запятую для отображения (опционально)
   inputElement.value = num.toFixed(2).replace('.', ',');
 }
+app.get('/api/order-history/:orderId', authenticateToken, async (req, res) => {
+  const orderId = parseInt(req.params.orderId);
+  const rows = await getSheetData('ИСТОРИЯ_ЗАКАЗОВ_СНАПШОТЫ!A2:I');
+  const history = rows
+    .filter(row => parseInt(row[0]) === orderId)
+    .map(row => ({
+      changedAt: row[1],
+      userId: row[2],
+      clientId: row[3],
+      price: parseFloat(row[4]),
+      status: row[5],
+      details: row[6],
+      delivery: row[7],
+      executionDate: row[8]
+    }))
+    .sort((a,b) => new Date(b.changedAt) - new Date(a.changedAt));
+  res.json(history);
+});
