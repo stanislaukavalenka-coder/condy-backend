@@ -1254,3 +1254,50 @@ async function getOrderProductsWithNames(orderId) {
   }
   return result;
 }
+
+// Обновить транзакцию
+app.put('/api/transactions/:id', authenticateToken, async (req, res) => {
+  const transId = parseInt(req.params.id);
+  const { date, type, category, amount, comment } = req.body;
+  const rows = await getSheetData('ФИНАНСЫ!A2:G');
+  let rowIndex = -1;
+  let oldRow = null;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === transId) {
+      rowIndex = i + 2;
+      oldRow = rows[i];
+      break;
+    }
+  }
+  if (rowIndex === -1) return res.status(404).json({ error: 'Транзакция не найдена' });
+
+  const newRow = [
+    transId,
+    date ? new Date(date).toISOString() : oldRow[1],
+    type || oldRow[2],
+    category || oldRow[3],
+    amount !== undefined ? amount : oldRow[4],
+    comment || oldRow[5],
+    oldRow[6] || ''
+  ];
+  const success = await updateRow('ФИНАНСЫ', rowIndex, newRow);
+  if (success) res.json({ success: true });
+  else res.status(500).json({ error: 'Ошибка обновления транзакции' });
+});
+
+// Удалить транзакцию
+app.delete('/api/transactions/:id', authenticateToken, async (req, res) => {
+  const transId = parseInt(req.params.id);
+  const rows = await getSheetData('ФИНАНСЫ!A:A');
+  let rowIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === transId) {
+      rowIndex = i + 2;
+      break;
+    }
+  }
+  if (rowIndex === -1) return res.status(404).json({ error: 'Транзакция не найдена' });
+  const success = await deleteRow('ФИНАНСЫ', rowIndex);
+  if (success) res.json({ success: true });
+  else res.status(500).json({ error: 'Ошибка удаления транзакции' });
+});
