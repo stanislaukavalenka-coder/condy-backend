@@ -142,81 +142,51 @@ app.get('/ping', (req, res) => {
 // ---------- ЗАКАЗЫ ----------
 app.get('/api/orders', async (req, res) => {
   const rows = await getSheetData('ЗАКАЗЫ!A2:I');
-const orders = rows.map(row => ({
-  id: row[0],
-  created: row[1],
-  clientId: row[2],
-  price: parsePrice(row[3]),   // ← вместо parseFloat
-  status: row[4],
-  details: row[5],
-  delivery: row[6],
-  executionDate: row[7],
-}));
+  const orders = rows.map(row => ({
+    id: row[0],
+    created: row[1],
+    clientId: row[2],
+    price: parsePrice(row[3]),
+    status: row[4],
+    details: row[5],
+    delivery: row[6],
+    executionDate: row[7],
+  }));
   res.json(orders);
 });
 
 app.post('/api/orders', authenticateToken, async (req, res) => {
-  // Принимаем поля клиента и заказа
   const { clientName, clientPhone, clientAddress, price, status, details, delivery, executionDate } = req.body;
 
-  // 1. Получаем или создаём клиента (может вернуть null, если все три поля пустые)
   const clientId = await findOrCreateClient(clientName, clientPhone, clientAddress);
 
-  // 2. Генерируем новый ID заказа
   const rows = await getSheetData('ЗАКАЗЫ!A:A');
   let lastId = 0;
   rows.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
   const newId = lastId + 1;
   const now = new Date().toISOString();
 
-  // 3. Добавляем строку в ЗАКАЗЫ (clientId может быть null – тогда в таблице будет пусто или 0)
   console.log('🔍 clientId из findOrCreateClient:', clientId, typeof clientId);
   const success = await appendRow('ЗАКАЗЫ!A:I', [
     newId, now, clientId !== null ? clientId : '', price, status, details, delivery, executionDate, req.user.userId
   ]);
   if (!success) return res.status(500).json({ error: 'Ошибка создания заказа' });
 
-  // 4. Если статус "оплачен" или "завершен" – создаём финансовую транзакцию
   if (status === 'оплачен' || status === 'завершен') {
     await createTransactionForOrder(newId, price, clientId);
   }
 
-  // 5. Сохраняем снимок заказа в историю
   const products = await getOrderProductsWithNames(newId);
-await saveOrderSnapshot(newId, req.user.userId, req.user.name, products);
+  await saveOrderSnapshot(newId, req.user.userId, req.user.name, products);
 
   res.json({ success: true, orderId: newId });
 });
-
-async function createTransactionForOrder(orderId, price, clientId) {
-  // Получаем имя клиента для комментария
-  const clients = await getSheetData('КЛИЕНТЫ!A2:E');
-  const client = clients.find(c => parseInt(c[0]) === clientId);
-  const clientName = client ? client[1] : 'Неизвестный';
-
-  // Получаем следующий ID для транзакции
-  const financeRows = await getSheetData('ФИНАНСЫ!A:A');
-  let lastId = 0;
-  financeRows.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
-  const newId = lastId + 1;
-  const now = new Date().toISOString();
-
-  await appendRow('ФИНАНСЫ!A:G', [
-    newId,
-    now,
-    'Доход',
-    'Заказ',
-    price,
-    `Оплата заказа #${orderId} (${clientName})`,
-    orderId   // опционально: ID заказа для связи
-  ]);
-}
 
 app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.id);
   const updates = req.body;
   console.log('📥 Получен запрос на обновление заказа:', req.body);
-  
+
   const rows = await getSheetData('ЗАКАЗЫ!A2:I');
   let rowIndex = -1;
   let oldRow = null;
@@ -233,13 +203,11 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const newStatus = updates.status;
   const newPrice = updates.price !== undefined ? parseFloat(updates.price) : parseFloat(oldRow[3]);
 
-  // ---------- ОБРАБОТКА КЛИЕНТА ----------
-
   console.log('🔍 Полученные данные клиента из запроса:', {
-  clientName: updates.clientName,
-  clientPhone: updates.clientPhone,
-  clientAddress: updates.clientAddress
-});
+    clientName: updates.clientName,
+    clientPhone: updates.clientPhone,
+    clientAddress: updates.clientAddress
+  });
   let finalClientId = oldRow[2] && oldRow[2] !== '' ? parseInt(oldRow[2]) : null;
 
   const hasName = updates.clientName !== undefined;
@@ -265,7 +233,6 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
     }
   }
 
-  // Обновляем заказ
   const newRow = [
     Number(oldRow[0]),
     oldRow[1],
@@ -281,7 +248,6 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const success = await updateRow('ЗАКАЗЫ', rowIndex, newRow);
   if (!success) return res.status(500).json({ error: 'Ошибка обновления заказа' });
 
-  // Финансовые транзакции (ваша логика)
   const shouldCreate = (oldStatus !== 'оплачен' && oldStatus !== 'завершен') &&
                        (newStatus === 'оплачен' || newStatus === 'завершен');
   const shouldDelete =
@@ -295,14 +261,14 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   }
 
   const products = await getOrderProductsWithNames(orderId);
-await saveOrderSnapshot(orderId, req.user.userId, req.user.name, products);
+  await saveOrderSnapshot(orderId, req.user.userId, req.user.name, products);
   console.log('✅ Заказ обновлён, новый clientId =', finalClientId);
   res.json({ success: true });
 });
+
 app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.id);
 
-  // Получаем данные заказа перед удалением
   const ordersData = await getSheetData('ЗАКАЗЫ!A2:I');
   let rowIndex = -1;
   let orderRow = null;
@@ -315,18 +281,15 @@ app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   }
   if (rowIndex === -1) return res.status(404).json({ error: 'Заказ не найден' });
 
-  const orderStatus = orderRow[4]; // статус заказа
+  const orderStatus = orderRow[4];
 
-  // 1. Если заказ был оплачен, удаляем финансовую транзакцию
   if (orderStatus === 'оплачен') {
     await deleteTransactionByOrderId(orderId);
   }
 
-  // 2. Сохраняем снимок заказа в историю (последнее состояние перед удалением)
   const products = await getOrderProductsWithNames(orderId);
-await saveOrderSnapshot(orderId, req.user.userId, req.user.name, products);
+  await saveOrderSnapshot(orderId, req.user.userId, req.user.name, products);
 
-  // 3. Удаляем все товары заказа из ЗАКАЗЫ_ТОВАРЫ
   const orderProductsRows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
   for (let i = 0; i < orderProductsRows.length; i++) {
     if (parseInt(orderProductsRows[i][0]) === orderId) {
@@ -334,12 +297,12 @@ await saveOrderSnapshot(orderId, req.user.userId, req.user.name, products);
     }
   }
 
-  // 4. Удаляем заказ из таблицы ЗАКАЗЫ
   const success = await deleteRow('ЗАКАЗЫ', rowIndex);
   if (!success) return res.status(500).json({ error: 'Ошибка удаления заказа' });
 
   res.json({ success: true });
 });
+
 // ---------- КЛИЕНТЫ ----------
 app.get('/api/clients', async (req, res) => {
   const rows = await getSheetData('КЛИЕНТЫ!A2:E');
@@ -364,64 +327,10 @@ app.post('/api/clients', authenticateToken, async (req, res) => {
   else res.status(500).json({ error: 'Ошибка создания клиента' });
 });
 
-/**
- * Создаёт транзакцию дохода для заказа
- * @param {number} orderId - ID заказа
- * @param {number} price - сумма
- * @param {number|null} clientId - ID клиента (может быть null)
- */
-async function createTransactionForOrder(orderId, price, clientId) {
-  // Получаем текущие ID транзакций, чтобы вычислить следующий
-  const financeRows = await getSheetData('ФИНАНСЫ!A:A');
-  let lastId = 0;
-  financeRows.forEach(row => {
-    const id = parseInt(row[0]);
-    if (!isNaN(id) && id > lastId) lastId = id;
-  });
-  const newId = lastId + 1;
-
-  const now = new Date().toISOString();
-  const comment = `Оплата заказа #${orderId}`;
-
-  // Добавляем строку в лист ФИНАНСЫ (столбцы A–G)
-  const success = await appendRow('ФИНАНСЫ!A:G', [
-    newId,          // A: ID транзакции
-    now,            // B: дата/время
-    'Доход',        // C: тип
-    'Заказ',        // D: категория
-    price,          // E: сумма
-    comment,        // F: комментарий
-    orderId         // G: ID заказа (для связи)
-  ]);
-  if (!success) console.error(`Не удалось создать транзакцию для заказа ${orderId}`);
-}
-
-/**
- * Удаляет транзакцию дохода, связанную с заказом (по полю G)
- * @param {number} orderId - ID заказа
- */
-async function deleteTransactionByOrderId(orderId) {
-  const rows = await getSheetData('ФИНАНСЫ!A2:G');
-  let rowIndex = -1;
-  for (let i = 0; i < rows.length; i++) {
-    // Ищем транзакцию, у которой в столбце G (индекс 6) стоит orderId
-    if (parseInt(rows[i][6]) === orderId) {
-      rowIndex = i + 2; // +2, потому что данные с A2
-      break;
-    }
-  }
-  if (rowIndex === -1) {
-    console.log(`Транзакция для заказа ${orderId} не найдена, удаление не требуется`);
-    return;
-  }
-  const success = await deleteRow('ФИНАНСЫ', rowIndex);
-  if (!success) console.error(`Ошибка удаления транзакции для заказа ${orderId}`);
-}
-
 app.put('/api/clients/:id', authenticateToken, async (req, res) => {
   const clientId = parseInt(req.params.id);
   const { name, phone, address, notes } = req.body;
-  
+
   const rows = await getSheetData('КЛИЕНТЫ!A2:E');
   let rowIndex = -1;
   let oldRow = null;
@@ -433,8 +342,7 @@ app.put('/api/clients/:id', authenticateToken, async (req, res) => {
     }
   }
   if (rowIndex === -1) return res.status(404).json({ error: 'Клиент не найден' });
-  
-  // Обновляем только те поля, которые пришли в запросе (не перезаписываем остальные)
+
   const newRow = [
     clientId,
     name !== undefined ? name : oldRow[1],
@@ -442,7 +350,7 @@ app.put('/api/clients/:id', authenticateToken, async (req, res) => {
     address !== undefined ? address : oldRow[3],
     notes !== undefined ? notes : oldRow[4],
   ];
-  
+
   const success = await updateRow('КЛИЕНТЫ', rowIndex, newRow);
   if (success) res.json({ success: true });
   else res.status(500).json({ error: 'Ошибка обновления клиента' });
@@ -456,7 +364,6 @@ app.get('/api/stock', async (req, res) => {
 });
 
 app.post('/api/stock', authenticateToken, async (req, res) => {
-  // реализация обновления склада (приход/расход) – вы можете добавить позже
   res.status(501).json({ error: 'Not implemented' });
 });
 
@@ -480,7 +387,7 @@ app.get('/api/finance', async (req, res) => {
     comment: row[5],
   }));
 
-    const totalIncome = transactions.filter(t => t.type === 'Доход').reduce((s, t) => s + t.amount, 0);
+  const totalIncome = transactions.filter(t => t.type === 'Доход').reduce((s, t) => s + t.amount, 0);
   const totalExpense = transactions.filter(t => t.type === 'Расход').reduce((s, t) => s + t.amount, 0);
   res.json({
     transactions,
@@ -489,13 +396,14 @@ app.get('/api/finance', async (req, res) => {
     profit: totalIncome - totalExpense,
   });
 });
+
 app.post('/api/transactions', authenticateToken, async (req, res) => {
-  const { type, category, amount, comment } = req.body;
+  const { type, category, amount, comment, date } = req.body;
   const rows = await getSheetData('ФИНАНСЫ!A:A');
   let lastId = 0;
   rows.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
   const newId = lastId + 1;
-  const now = new Date().toISOString();
+  const now = date ? new Date(date).toISOString() : new Date().toISOString();
   const success = await appendRow('ФИНАНСЫ!A:F', [newId, now, type, category, amount, comment]);
   if (success) res.json({ success: true });
   else res.status(500).json({ error: 'Ошибка добавления транзакции' });
@@ -545,41 +453,27 @@ app.post('/api/logout', (req, res) => {
   res.json({ success: true });
 });
 
-
-process.on('uncaughtException', (err) => {
-  console.error('❌ Uncaught Exception:', err);
-});
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection:', reason);
-});
-
-app.listen(PORT, () => {
-  console.log(`🚀 Сервер запущен на порту ${PORT}`);
-});
-
+// ---------- РАСЧЁТ РЕЦЕПТА ----------
 app.post('/api/recipes/calculate', async (req, res) => {
   const { recipeId, desiredWeight } = req.body;
   if (!recipeId || !desiredWeight) {
     return res.status(400).json({ error: 'recipeId и desiredWeight обязательны' });
   }
   try {
-    // Получаем рецепт (выход)
     const recipes = await getSheetData('РЕЦЕПТЫ!A2:D');
     const recipe = recipes.find(r => parseInt(r[0]) === recipeId);
     if (!recipe) return res.status(404).json({ error: 'Рецепт не найден' });
-    const recipeYield = parseFloat(recipe[2]); // столбец C (выход в граммах)
+    const recipeYield = parseFloat(recipe[2]);
     if (!recipeYield) return res.status(400).json({ error: 'В рецепте не указан выход' });
 
     const coefficient = desiredWeight / recipeYield;
 
-    // Получаем состав рецепта
     const composition = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
     const recipeIngredients = composition.filter(row => parseInt(row[0]) === recipeId);
     if (recipeIngredients.length === 0) {
       return res.status(404).json({ error: 'В рецепте нет ингредиентов' });
     }
 
-    // Получаем список ингредиентов с названиями
     const ingredients = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
     const ingMap = new Map();
     ingredients.forEach(ing => ingMap.set(parseInt(ing[0]), { name: ing[1], unit: ing[3], price: parseFloat(ing[4]) || 0 }));
@@ -587,7 +481,7 @@ app.post('/api/recipes/calculate', async (req, res) => {
     const resultIngredients = [];
     for (const comp of recipeIngredients) {
       const ingId = parseInt(comp[1]);
-      const amount = parseFloat(comp[2]); // количество в граммах на одну порцию/вес рецепта
+      const amount = parseFloat(comp[2]);
       const needed = amount * coefficient;
       const ing = ingMap.get(ingId);
       if (ing) {
@@ -603,6 +497,7 @@ app.post('/api/recipes/calculate', async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
+
 app.post('/api/recipes', authenticateToken, async (req, res) => {
   const { name, yield: recipeYield, ingredients } = req.body;
   if (!name || !recipeYield || !Array.isArray(ingredients) || ingredients.length === 0) {
@@ -610,16 +505,13 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
   }
 
   try {
-    // 1. Получить следующий ID для рецепта
     const recipesData = await getSheetData('РЕЦЕПТЫ!A:A');
     let lastId = 0;
     recipesData.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
     const newRecipeId = lastId + 1;
 
-    // 2. Добавить рецепт в лист РЕЦЕПТЫ
     await appendRow('РЕЦЕПТЫ!A:E', [newRecipeId, name, recipeYield, '', '']);
 
-    // 3. Получить список ингредиентов (справочник)
     const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
     const ingByName = new Map();
     let maxIngId = 0;
@@ -635,13 +527,11 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
     for (const ing of ingredients) {
       let ingId = ingByName.get(ing.name);
       if (!ingId) {
-        // Создаём новый ингредиент
         maxIngId++;
         ingId = maxIngId;
         const defaultUnit = 'г';
         const defaultPrice = 0;
         await appendRow('ИНГРЕДИЕНТЫ!A:E', [ingId, ing.name, 'Автосоздан', defaultUnit, defaultPrice]);
-        // Также добавляем в СКЛАД (если есть лист СКЛАД)
         await appendRow('СКЛАД!A:D', [ingId, ing.name, 0, 0]);
         ingByName.set(ing.name, ingId);
         newIngredients.push(ing.name);
@@ -649,10 +539,7 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
       compositionRows.push([newRecipeId, ingId, ing.amountG]);
     }
 
-    // 4. Добавить состав рецепта
     if (compositionRows.length > 0) {
-      const lastRow = await getSheetData('СОСТАВ_РЕЦЕПТА!A:A');
-      const startRow = lastRow.length + 2; // +2 потому что данные с A2
       for (const row of compositionRows) {
         await appendRow('СОСТАВ_РЕЦЕПТА!A:C', row);
       }
@@ -669,19 +556,19 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
   }
 });
 
+// ---------- ОПЕРАЦИИ СО СКЛАДОМ ----------
 app.post('/api/stock/transaction', authenticateToken, async (req, res) => {
   const { materialName, operation, quantity, comment } = req.body;
   if (!materialName || !operation || !quantity || quantity <= 0) {
     return res.status(400).json({ error: 'Неверные параметры' });
   }
   try {
-    // Найти строку материала в СКЛАД
     const stockData = await getSheetData('СКЛАД!A:D');
     let rowIndex = -1;
     let currentStock = 0;
     for (let i = 0; i < stockData.length; i++) {
       if (stockData[i][1] === materialName) {
-        rowIndex = i + 2; // +2 потому что данные с A2
+        rowIndex = i + 2;
         currentStock = parseFloat(stockData[i][3]) || 0;
         break;
       }
@@ -702,11 +589,8 @@ app.post('/api/stock/transaction', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Операция должна быть "Приход" или "Расход"' });
     }
 
-    // Обновить остаток
-    const range = `СКЛАД!D${rowIndex}`;
     await updateRow('СКЛАД', rowIndex, [stockData[rowIndex-2][0], stockData[rowIndex-2][1], stockData[rowIndex-2][2], newStock]);
 
-    // Добавить запись в ИСТОРИЯ
     const now = new Date().toISOString();
     await appendRow('ИСТОРИЯ!A:F', [now, materialName, operation, quantity, newStock, comment || '']);
 
@@ -718,7 +602,7 @@ app.post('/api/stock/transaction', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/stock/batch', authenticateToken, async (req, res) => {
-  const operations = req.body; // ожидаем массив { material, operation, quantity, comment }
+  const operations = req.body;
   if (!Array.isArray(operations) || operations.length === 0) {
     return res.status(400).json({ error: 'Нет операций' });
   }
@@ -733,7 +617,6 @@ app.post('/api/stock/batch', authenticateToken, async (req, res) => {
         errors.push(`Неверные данные для ${material}`);
         continue;
       }
-      // Найти строку материала в СКЛАД
       const stockData = await getSheetData('СКЛАД!A:D');
       let rowIndex = -1;
       let currentStock = 0;
@@ -761,9 +644,7 @@ app.post('/api/stock/batch', authenticateToken, async (req, res) => {
         errors.push(`Некорректная операция для "${material}"`);
         continue;
       }
-      // Обновление остатка
       await updateRow('СКЛАД', rowIndex, [stockData[rowIndex-2][0], stockData[rowIndex-2][1], stockData[rowIndex-2][2], newStock]);
-      // Запись в историю
       const now = new Date().toISOString();
       await appendRow('ИСТОРИЯ!A:F', [now, material, operation, quantity, newStock, comment || '']);
       successOps.push(material);
@@ -778,267 +659,61 @@ app.post('/api/stock/batch', authenticateToken, async (req, res) => {
   res.json({ success: true, message: `Выполнено ${successOps.length} операций.` });
 });
 
-// Функции для работы с паролями (аналогично вашим GAS)
-function generateSecurePassword() {
-  const length = 10;
-  const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()";
-  let password = "";
-  for (let i = 0; i < length; i++) {
-    const randomIndex = Math.floor(Math.random() * charset.length);
-    password += charset[randomIndex];
-  }
-  return password;
-}
-
-function deriveKeyAndHash(password, salt) {
-  const combined = password + salt;
-  const digest = crypto.createHash('sha256').update(combined).digest('hex');
-  return digest;
-}
-app.get('/api/users', authenticateToken, async (req, res) => {
-  // Только админ может просматривать
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Доступ запрещён' });
+// ---------- СПИСАНИЕ ИНГРЕДИЕНТОВ (калькулятор) ----------
+app.post('/api/stock/writeoff', authenticateToken, async (req, res) => {
+  const { items, comment } = req.body;
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Нет ингредиентов для списания' });
   }
   try {
-    const usersData = await getSheetData('ПОЛЬЗОВАТЕЛИ!A2:H');
-    const users = usersData.map(row => ({
-      id: parseInt(row[0]),
-      name: row[1],
-      email: row[2],
-      role: row[3],
-    }));
-    res.json(users);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка загрузки пользователей' });
-  }
-});
+    const stockData = await getSheetData('СКЛАД!A2:D');
+    const stockMap = new Map();
+    stockData.forEach(row => {
+      const name = row[1];
+      const stock = parseFloat(row[3]) || 0;
+      const rowIndex = stockData.indexOf(row) + 2;
+      stockMap.set(name, { stock, rowIndex });
+    });
 
-app.post('/api/users', authenticateToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Доступ запрещён' });
-  }
-  const { name, email, role } = req.body;
-  if (!name || !email || !role) {
-    return res.status(400).json({ error: 'Не хватает данных' });
-  }
-  try {
-    // Проверка на существование
-    const users = await getSheetData('ПОЛЬЗОВАТЕЛИ!A:C');
-    if (users.some(u => u[2] === email)) {
-      return res.status(400).json({ error: 'Пользователь с таким email уже существует' });
-    }
-    const plainPassword = generateSecurePassword();
-    const salt = generateSecurePassword();
-    const passwordHash = deriveKeyAndHash(plainPassword, salt);
-    // Получить новый ID
-    let lastId = 0;
-    users.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
-    const newId = lastId + 1;
-    // Добавить строку
-    await appendRow('ПОЛЬЗОВАТЕЛИ!A:H', [newId, name, email, role, passwordHash, salt, '', '[]']);
-    // Отправить пароль по email (опционально)
-    // Здесь можно добавить отправку email, например, через nodemailer или другой сервис
-    res.json({ success: true, password: plainPassword });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка создания пользователя' });
-  }
-});
+    const errors = [];
+    const transactions = [];
 
-app.delete('/api/users/:id', authenticateToken, async (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Доступ запрещён' });
-  }
-  const userId = parseInt(req.params.id);
-  try {
-    const usersData = await getSheetData('ПОЛЬЗОВАТЕЛИ!A:A');
-    let rowIndex = -1;
-    for (let i = 0; i < usersData.length; i++) {
-      if (parseInt(usersData[i][0]) === userId) {
-        rowIndex = i + 2;
-        break;
+    for (const item of items) {
+      const stockInfo = stockMap.get(item.name);
+      if (!stockInfo) {
+        errors.push(`Ингредиент "${item.name}" не найден`);
+        continue;
       }
-    }
-    if (rowIndex === -1) {
-      return res.status(404).json({ error: 'Пользователь не найден' });
-    }
-    await deleteRow('ПОЛЬЗОВАТЕЛИ', rowIndex);
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка удаления пользователя' });
-  }
-});
-
-app.post('/api/ingredients', authenticateToken, async (req, res) => {
-  const { name, category, unit, price } = req.body;
-  if (!name || !unit || price === undefined) {
-    return res.status(400).json({ error: 'Не хватает данных' });
-  }
-  try {
-    const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
-    // Проверка на дубликат
-    if (ingData.some(row => row[1] === name)) {
-      return res.status(400).json({ error: 'Ингредиент уже существует' });
-    }
-    let lastId = 0;
-    ingData.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
-    const newId = lastId + 1;
-    await appendRow('ИНГРЕДИЕНТЫ!A:E', [newId, name, category || '', unit, price]);
-    // Также добавить в СКЛАД
-    await appendRow('СКЛАД!A:D', [newId, name, 0, 0]);
-    res.json({ success: true, message: `Ингредиент "${name}" добавлен` });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка добавления ингредиента' });
-  }
-});
-
-async function deleteTransactionByOrderId(orderId) {
-  const rows = await getSheetData('ФИНАНСЫ!A2:G');
-  let rowIndex = -1;
-  for (let i = 0; i < rows.length; i++) {
-    // Ищем транзакцию, у которой в поле comment или reference_id есть упоминание заказа
-    const comment = rows[i][5] || '';
-    if (comment.includes(`заказа #${orderId}`) || comment.includes(`Оплата заказа #${orderId}`)) {
-      rowIndex = i + 2; // +2 из-за A2
-      break;
-    }
-  }
-  if (rowIndex !== -1) {
-    await deleteRow('ФИНАНСЫ', rowIndex);
-  }
-}
-async function saveOrderSnapshot(orderId, userId, userName, products) {
-  const rows = await getSheetData('ЗАКАЗЫ!A2:I');
-  let orderRow = null;
-  for (let i = 0; i < rows.length; i++) {
-    if (parseInt(rows[i][0]) === orderId) {
-      orderRow = rows[i];
-      break;
-    }
-  }
-  if (!orderRow) return;
-
-  const now = new Date().toISOString();
-  const productsJson = JSON.stringify(products.map(p => ({
-    name: p.name,
-    quantity: p.quantity,
-    price: p.price
-  })));
-
-  await appendRow('ИСТОРИЯ_ЗАКАЗОВ_СНАПШОТЫ!A:K', [
-    orderId,            // A
-    now,                // B
-    userId,             // C (число)
-    orderRow[2],        // D clientId
-    orderRow[3],        // E price
-    orderRow[4],        // F status
-    orderRow[5],        // G details
-    orderRow[6],        // H delivery
-    orderRow[7],        // I executionDate
-    userName,           // J (имя)
-    productsJson        // K (JSON товаров)
-  ]);
-}
-
-async function findOrCreateClient(name, phone, address) {
-  console.log('findOrCreateClient args:', { name, phone, address });
-  const hasName = name && name.trim() !== '' && name.trim() !== 'Аноним';
-  const hasPhone = phone && phone.trim() !== '' && phone.trim() !== 'не указан';
-  const hasAddress = address && address.trim() !== '';
-
-  if (!hasName && !hasPhone && !hasAddress) return null;
-
-  let client = null;
-  let clientRowIndex = -1;
-
-  // Поиск ТОЛЬКО по телефону (если указан)
-  if (hasPhone) {
-    const normalizedPhone = phone.replace(/[^0-9+]/g, '');
-    const clients = await getSheetData('КЛИЕНТЫ!A2:E');
-    for (let i = 0; i < clients.length; i++) {
-      const c = clients[i];
-      const cPhone = c[2] ? c[2].replace(/[^0-9+]/g, '') : '';
-      if (cPhone === normalizedPhone) {
-        client = c;
-        clientRowIndex = i + 2;
-        break;
+      if (stockInfo.stock < item.neededGrams) {
+        errors.push(`Недостаточно "${item.name}" (остаток: ${stockInfo.stock}, нужно: ${item.neededGrams})`);
+        continue;
       }
+      const newStock = stockInfo.stock - item.neededGrams;
+      transactions.push({
+        name: item.name,
+        qty: item.neededGrams,
+        rowIndex: stockInfo.rowIndex,
+        newStock
+      });
     }
-  }
 
-  if (client) {
-    // Найден по телефону – обновляем имя и соцсети (если они пустые)
-    const clientId = Number(client[0]);
-    let needUpdate = false;
-    if (hasName && (!client[1] || client[1] === 'Аноним')) {
-      client[1] = name;
-      needUpdate = true;
+    if (errors.length > 0) {
+      return res.status(400).json({ error: errors.join('; ') });
     }
-    if (hasPhone && (!client[2] || client[2] === 'не указан')) {
-      client[2] = phone.replace(/[^0-9+]/g, '');
-      needUpdate = true;
+
+    const now = new Date().toISOString();
+    for (const t of transactions) {
+      await updateRow('СКЛАД', t.rowIndex, [t.rowIndex, t.name, '', t.newStock]);
+      await appendRow('ИСТОРИЯ!A:F', [now, t.name, 'Расход', t.qty, t.newStock, comment || 'Списание через калькулятор']);
     }
-    if (hasAddress && !client[3]) {
-      client[3] = address;
-      needUpdate = true;
-    }
-    if (needUpdate && clientRowIndex !== -1) {
-      await updateRow('КЛИЕНТЫ', clientRowIndex, [clientId, client[1], client[2], client[3], client[4]]);
-    }
-    return clientId;
-  } else {
-    // Телефон не найден – создаём нового клиента
-    const clients = await getSheetData('КЛИЕНТЫ!A2:E');
-    const ids = clients.map(c => Number(c[0])).filter(id => !isNaN(id));
-    const newId = ids.length ? Math.max(...ids) + 1 : 1;
-    await appendRow('КЛИЕНТЫ!A:E', [
-      newId,
-      hasName ? name : '',
-      hasPhone ? phone.replace(/[^0-9+]/g, '') : '',
-      hasAddress ? address : '',
-      ''
-    ]);
-    return newId;
+
+    res.json({ success: true, message: `Списано ${transactions.length} позиций` });
+  } catch (err) {
+    console.error('Ошибка списания:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
-}
-async function updateClientData(clientId, name, phone, address) {
-  const rows = await getSheetData('КЛИЕНТЫ!A2:E');
-  let rowIndex = -1;
-  let oldRow = null;
-  for (let i = 0; i < rows.length; i++) {
-    if (parseInt(rows[i][0]) === clientId) {
-      rowIndex = i + 2;
-      oldRow = rows[i];
-      break;
-    }
-  }
-  if (rowIndex === -1) return false;
-  const newRow = [
-    clientId,
-    (name !== undefined && name !== null) ? name : (oldRow[1] || ''),
-    (phone !== undefined && phone !== null) ? phone : (oldRow[2] || ''),
-    (address !== undefined && address !== null) ? address : (oldRow[3] || ''),
-    oldRow[4] || '' // notes
-  ];
-  return await updateRow('КЛИЕНТЫ', rowIndex, newRow);
-}
-async function createClient(name, phone, address) {
-  const clients = await getSheetData('КЛИЕНТЫ!A2:E');
-  const ids = clients.map(c => Number(c[0])).filter(id => !isNaN(id));
-  const newId = ids.length ? Math.max(...ids) + 1 : 1;
-  await appendRow('КЛИЕНТЫ!A:E', [
-    newId,
-    name || '',
-    phone ? phone.replace(/[^0-9+]/g, '') : '',
-    address || '',
-    ''
-  ]);
-  return newId;
-}
+});
+
 // ---------- КАТЕГОРИИ ----------
 app.get('/api/categories', async (req, res) => {
   const rows = await getSheetData('КАТЕГОРИИ!A2:C');
@@ -1056,6 +731,39 @@ app.post('/api/categories', authenticateToken, async (req, res) => {
   const newId = lastId + 1;
   await appendRow('КАТЕГОРИИ!A:C', [newId, name, 0]);
   res.json({ success: true, id: newId });
+});
+
+app.put('/api/categories/:id', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
+  const catId = parseInt(req.params.id);
+  const { name } = req.body;
+  const rows = await getSheetData('КАТЕГОРИИ!A2:C');
+  let rowIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === catId) {
+      rowIndex = i + 2;
+      break;
+    }
+  }
+  if (rowIndex === -1) return res.status(404).json({ error: 'Категория не найдена' });
+  await updateRow('КАТЕГОРИИ', rowIndex, [catId, name, rows[rowIndex-2][2] || 0]);
+  res.json({ success: true });
+});
+
+app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
+  const catId = parseInt(req.params.id);
+  const rows = await getSheetData('КАТЕГОРИИ!A:A');
+  let rowIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === catId) {
+      rowIndex = i + 2;
+      break;
+    }
+  }
+  if (rowIndex === -1) return res.status(404).json({ error: 'Категория не найдена' });
+  await deleteRow('КАТЕГОРИИ', rowIndex);
+  res.json({ success: true });
 });
 
 // ---------- ТОВАРЫ ----------
@@ -1133,44 +841,14 @@ app.delete('/api/products/:id', authenticateToken, async (req, res) => {
   if (success) res.json({ success: true });
   else res.status(500).json({ error: 'Ошибка удаления товара' });
 });
-app.put('/api/categories/:id', authenticateToken, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
-  const catId = parseInt(req.params.id);
-  const { name } = req.body;
-  const rows = await getSheetData('КАТЕГОРИИ!A2:C');
-  let rowIndex = -1;
-  for (let i = 0; i < rows.length; i++) {
-    if (parseInt(rows[i][0]) === catId) {
-      rowIndex = i + 2;
-      break;
-    }
-  }
-  if (rowIndex === -1) return res.status(404).json({ error: 'Категория не найдена' });
-  await updateRow('КАТЕГОРИИ', rowIndex, [catId, name, rows[rowIndex-2][2] || 0]);
-  res.json({ success: true });
-});
-app.delete('/api/categories/:id', authenticateToken, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Доступ запрещён' });
-  const catId = parseInt(req.params.id);
-  const rows = await getSheetData('КАТЕГОРИИ!A:A');
-  let rowIndex = -1;
-  for (let i = 0; i < rows.length; i++) {
-    if (parseInt(rows[i][0]) === catId) {
-      rowIndex = i + 2;
-      break;
-    }
-  }
-  if (rowIndex === -1) return res.status(404).json({ error: 'Категория не найдена' });
-  await deleteRow('КАТЕГОРИИ', rowIndex);
-  res.json({ success: true });
-});
-// Добавить товар к заказу
+
+// ---------- ТОВАРЫ ЗАКАЗА ----------
 app.post('/api/order-products', authenticateToken, async (req, res) => {
   const { orderId, productId, quantity, price } = req.body;
   await appendRow('ЗАКАЗЫ_ТОВАРЫ!A:D', [orderId, productId, quantity, price]);
   res.json({ success: true });
 });
-// Получить товары заказа
+
 app.get('/api/order-products/:orderId', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.orderId);
   const rows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
@@ -1182,7 +860,6 @@ app.get('/api/order-products/:orderId', authenticateToken, async (req, res) => {
   res.json(products);
 });
 
-// Удалить все товары заказа (перед обновлением)
 app.delete('/api/order-products/:orderId', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.orderId);
   const rows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
@@ -1195,67 +872,8 @@ app.delete('/api/order-products/:orderId', authenticateToken, async (req, res) =
   }
   res.json({ success: true });
 });
-function parsePrice(value) {
-  if (value === undefined || value === null) return 0;
-  if (typeof value === 'number') return value;
-  let str = String(value).trim().replace(',', '.');
-  let num = parseFloat(str);
-  return isNaN(num) ? 0 : num;
-}
-function formatPriceInput(inputElement) {
-  let raw = inputElement.value.trim().replace(',', '.');
-  let num = parseFloat(raw);
-  if (isNaN(num)) num = 0;
-  // Форматируем с двумя знаками, затем заменяем точку на запятую для отображения (опционально)
-  inputElement.value = num.toFixed(2).replace('.', ',');
-}
-app.get('/api/order-history-full/:orderId', authenticateToken, async (req, res) => {
-  const orderId = parseInt(req.params.orderId);
-  const rows = await getSheetData('ИСТОРИЯ_ЗАКАЗОВ_СНАПШОТЫ!A2:K');
-  const history = rows
-    .filter(row => parseInt(row[0]) === orderId)
-    .map(row => {
-      let products = [];
-      try {
-        products = JSON.parse(row[10] || '[]');
-      } catch(e) {}
-      return {
-        changedAt: row[1],
-        userName: row[9] || `Пользователь ${row[2]}`, // J – имя, если пусто, то берём из C (userId)
-        clientId: row[3],
-        price: parseFloat(row[4]),
-        status: row[5],
-        details: row[6],
-        delivery: row[7],
-        executionDate: row[8],
-        userId: parseInt(row[2]),
-        products: products
-      };
-    })
-    .sort((a,b) => new Date(b.changedAt) - new Date(a.changedAt));
-  res.json(history);
-});
-async function getOrderProductsWithNames(orderId) {
-  const productsRows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
-  const orderProducts = productsRows.filter(row => parseInt(row[0]) === orderId);
-  const allProducts = await getSheetData('ТОВАРЫ!A2:G');
-  const productMap = new Map();
-  allProducts.forEach(p => productMap.set(parseInt(p[0]), p[2])); // id -> name
-  const result = [];
-  for (const op of orderProducts) {
-    const productId = parseInt(op[1]);
-    let name = productMap.get(productId);
-    if (!name) name = `Товар #${productId}`;
-    result.push({
-      name: name,
-      quantity: parseFloat(op[2]),
-      price: parseFloat(op[3])
-    });
-  }
-  return result;
-}
 
-// Обновить транзакцию
+// ---------- ФИНАНСЫ (редактирование и удаление) ----------
 app.put('/api/transactions/:id', authenticateToken, async (req, res) => {
   const transId = parseInt(req.params.id);
   const { date, type, category, amount, comment } = req.body;
@@ -1285,7 +903,6 @@ app.put('/api/transactions/:id', authenticateToken, async (req, res) => {
   else res.status(500).json({ error: 'Ошибка обновления транзакции' });
 });
 
-// Удалить транзакцию
 app.delete('/api/transactions/:id', authenticateToken, async (req, res) => {
   const transId = parseInt(req.params.id);
   const rows = await getSheetData('ФИНАНСЫ!A:A');
@@ -1300,4 +917,312 @@ app.delete('/api/transactions/:id', authenticateToken, async (req, res) => {
   const success = await deleteRow('ФИНАНСЫ', rowIndex);
   if (success) res.json({ success: true });
   else res.status(500).json({ error: 'Ошибка удаления транзакции' });
+});
+
+// ---------- ИСТОРИЯ ЗАКАЗОВ ----------
+app.get('/api/order-history-full/:orderId', authenticateToken, async (req, res) => {
+  const orderId = parseInt(req.params.orderId);
+  const rows = await getSheetData('ИСТОРИЯ_ЗАКАЗОВ_СНАПШОТЫ!A2:K');
+  const history = rows
+    .filter(row => parseInt(row[0]) === orderId)
+    .map(row => {
+      let products = [];
+      try {
+        products = JSON.parse(row[10] || '[]');
+      } catch(e) {}
+      return {
+        changedAt: row[1],
+        userName: row[9] || `Пользователь ${row[2]}`,
+        clientId: row[3],
+        price: parseFloat(row[4]),
+        status: row[5],
+        details: row[6],
+        delivery: row[7],
+        executionDate: row[8],
+        userId: parseInt(row[2]),
+        products: products
+      };
+    })
+    .sort((a,b) => new Date(b.changedAt) - new Date(a.changedAt));
+  res.json(history);
+});
+
+// ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
+function parsePrice(value) {
+  if (value === undefined || value === null) return 0;
+  if (typeof value === 'number') return value;
+  let str = String(value).trim().replace(',', '.');
+  let num = parseFloat(str);
+  return isNaN(num) ? 0 : num;
+}
+
+async function findOrCreateClient(name, phone, address) {
+  console.log('findOrCreateClient args:', { name, phone, address });
+  const hasName = name && name.trim() !== '' && name.trim() !== 'Аноним';
+  const hasPhone = phone && phone.trim() !== '' && phone.trim() !== 'не указан';
+  const hasAddress = address && address.trim() !== '';
+
+  if (!hasName && !hasPhone && !hasAddress) return null;
+
+  let client = null;
+  let clientRowIndex = -1;
+
+  if (hasPhone) {
+    const normalizedPhone = phone.replace(/[^0-9+]/g, '');
+    const clients = await getSheetData('КЛИЕНТЫ!A2:E');
+    for (let i = 0; i < clients.length; i++) {
+      const c = clients[i];
+      const cPhone = c[2] ? c[2].replace(/[^0-9+]/g, '') : '';
+      if (cPhone === normalizedPhone) {
+        client = c;
+        clientRowIndex = i + 2;
+        break;
+      }
+    }
+  }
+
+  if (client) {
+    const clientId = Number(client[0]);
+    let needUpdate = false;
+    if (hasName && (!client[1] || client[1] === 'Аноним')) {
+      client[1] = name;
+      needUpdate = true;
+    }
+    if (hasPhone && (!client[2] || client[2] === 'не указан')) {
+      client[2] = phone.replace(/[^0-9+]/g, '');
+      needUpdate = true;
+    }
+    if (hasAddress && !client[3]) {
+      client[3] = address;
+      needUpdate = true;
+    }
+    if (needUpdate && clientRowIndex !== -1) {
+      await updateRow('КЛИЕНТЫ', clientRowIndex, [clientId, client[1], client[2], client[3], client[4]]);
+    }
+    return clientId;
+  } else {
+    const clients = await getSheetData('КЛИЕНТЫ!A2:E');
+    const ids = clients.map(c => Number(c[0])).filter(id => !isNaN(id));
+    const newId = ids.length ? Math.max(...ids) + 1 : 1;
+    await appendRow('КЛИЕНТЫ!A:E', [
+      newId,
+      hasName ? name : '',
+      hasPhone ? phone.replace(/[^0-9+]/g, '') : '',
+      hasAddress ? address : '',
+      ''
+    ]);
+    return newId;
+  }
+}
+
+async function getOrderProductsWithNames(orderId) {
+  const productsRows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
+  const orderProducts = productsRows.filter(row => parseInt(row[0]) === orderId);
+  const allProducts = await getSheetData('ТОВАРЫ!A2:G');
+  const productMap = new Map();
+  allProducts.forEach(p => productMap.set(parseInt(p[0]), p[2]));
+  const result = [];
+  for (const op of orderProducts) {
+    const productId = parseInt(op[1]);
+    let name = productMap.get(productId);
+    if (!name) name = `Товар #${productId}`;
+    result.push({
+      name: name,
+      quantity: parseFloat(op[2]),
+      price: parseFloat(op[3])
+    });
+  }
+  return result;
+}
+
+async function saveOrderSnapshot(orderId, userId, userName, products) {
+  const rows = await getSheetData('ЗАКАЗЫ!A2:I');
+  let orderRow = null;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === orderId) {
+      orderRow = rows[i];
+      break;
+    }
+  }
+  if (!orderRow) return;
+
+  const now = new Date().toISOString();
+  const productsJson = JSON.stringify(products.map(p => ({
+    name: p.name,
+    quantity: p.quantity,
+    price: p.price
+  })));
+
+  await appendRow('ИСТОРИЯ_ЗАКАЗОВ_СНАПШОТЫ!A:K', [
+    orderId,
+    now,
+    userId,
+    orderRow[2],
+    orderRow[3],
+    orderRow[4],
+    orderRow[5],
+    orderRow[6],
+    orderRow[7],
+    userName,
+    productsJson
+  ]);
+}
+
+// ---------- ЕДИНСТВЕННАЯ ФУНКЦИЯ СОЗДАНИЯ ТРАНЗАКЦИИ ----------
+async function createTransactionForOrder(orderId, price, clientId) {
+  const financeRows = await getSheetData('ФИНАНСЫ!A:A');
+  let lastId = 0;
+  financeRows.forEach(row => {
+    const id = parseInt(row[0]);
+    if (!isNaN(id) && id > lastId) lastId = id;
+  });
+  const newId = lastId + 1;
+  const now = new Date().toISOString();
+  const comment = `Оплата заказа #${orderId}`;
+
+  const success = await appendRow('ФИНАНСЫ!A:G', [
+    newId, now, 'Доход', 'Заказ', price, comment, orderId
+  ]);
+  if (!success) console.error(`Не удалось создать транзакцию для заказа ${orderId}`);
+}
+
+// ---------- ЕДИНСТВЕННАЯ ФУНКЦИЯ УДАЛЕНИЯ ТРАНЗАКЦИИ ----------
+async function deleteTransactionByOrderId(orderId) {
+  const rows = await getSheetData('ФИНАНСЫ!A2:G');
+  let rowIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][6]) === orderId) {
+      rowIndex = i + 2;
+      break;
+    }
+  }
+  if (rowIndex === -1) {
+    console.log(`Транзакция для заказа ${orderId} не найдена, удаление не требуется`);
+    return;
+  }
+  const success = await deleteRow('ФИНАНСЫ', rowIndex);
+  if (!success) console.error(`Ошибка удаления транзакции для заказа ${orderId}`);
+}
+
+// ---------- УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ----------
+function generateSecurePassword() {
+  const length = 10;
+  const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()";
+  let password = "";
+  for (let i = 0; i < length; i++) {
+    const randomIndex = Math.floor(Math.random() * charset.length);
+    password += charset[randomIndex];
+  }
+  return password;
+}
+
+function deriveKeyAndHash(password, salt) {
+  const combined = password + salt;
+  const digest = crypto.createHash('sha256').update(combined).digest('hex');
+  return digest;
+}
+
+app.get('/api/users', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
+  try {
+    const usersData = await getSheetData('ПОЛЬЗОВАТЕЛИ!A2:H');
+    const users = usersData.map(row => ({
+      id: parseInt(row[0]),
+      name: row[1],
+      email: row[2],
+      role: row[3],
+    }));
+    res.json(users);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка загрузки пользователей' });
+  }
+});
+
+app.post('/api/users', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
+  const { name, email, role } = req.body;
+  if (!name || !email || !role) {
+    return res.status(400).json({ error: 'Не хватает данных' });
+  }
+  try {
+    const users = await getSheetData('ПОЛЬЗОВАТЕЛИ!A:C');
+    if (users.some(u => u[2] === email)) {
+      return res.status(400).json({ error: 'Пользователь с таким email уже существует' });
+    }
+    const plainPassword = generateSecurePassword();
+    const salt = generateSecurePassword();
+    const passwordHash = deriveKeyAndHash(plainPassword, salt);
+    let lastId = 0;
+    users.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
+    const newId = lastId + 1;
+    await appendRow('ПОЛЬЗОВАТЕЛИ!A:H', [newId, name, email, role, passwordHash, salt, '', '[]']);
+    res.json({ success: true, password: plainPassword });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка создания пользователя' });
+  }
+});
+
+app.delete('/api/users/:id', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
+  const userId = parseInt(req.params.id);
+  try {
+    const usersData = await getSheetData('ПОЛЬЗОВАТЕЛИ!A:A');
+    let rowIndex = -1;
+    for (let i = 0; i < usersData.length; i++) {
+      if (parseInt(usersData[i][0]) === userId) {
+        rowIndex = i + 2;
+        break;
+      }
+    }
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    await deleteRow('ПОЛЬЗОВАТЕЛИ', rowIndex);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка удаления пользователя' });
+  }
+});
+
+app.post('/api/ingredients', authenticateToken, async (req, res) => {
+  const { name, category, unit, price } = req.body;
+  if (!name || !unit || price === undefined) {
+    return res.status(400).json({ error: 'Не хватает данных' });
+  }
+  try {
+    const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
+    if (ingData.some(row => row[1] === name)) {
+      return res.status(400).json({ error: 'Ингредиент уже существует' });
+    }
+    let lastId = 0;
+    ingData.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
+    const newId = lastId + 1;
+    await appendRow('ИНГРЕДИЕНТЫ!A:E', [newId, name, category || '', unit, price]);
+    await appendRow('СКЛАД!A:D', [newId, name, 0, 0]);
+    res.json({ success: true, message: `Ингредиент "${name}" добавлен` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка добавления ингредиента' });
+  }
+});
+
+// ---------- ЗАПУСК СЕРВЕРА ----------
+process.on('uncaughtException', (err) => {
+  console.error('❌ Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection:', reason);
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Сервер запущен на порту ${PORT}`);
 });
