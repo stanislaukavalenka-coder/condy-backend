@@ -378,17 +378,23 @@ app.get('/api/recipes', async (req, res) => {
 app.get('/api/finance', async (req, res) => {
   const { startDate, endDate } = req.query;
   const rows = await getSheetData('ФИНАНСЫ!A2:F');
-  let transactions = rows.map(row => ({
-    id: row[0],
-    date: row[1],
-    type: row[2],
-    category: row[3],
-    amount: parseFloat(row[4]) || 0,
-    comment: row[5],
-  }));
+  let transactions = rows.map(row => {
+    const amountStr = row[4] || '0';
+    // Заменяем запятую на точку и парсим как число
+    const amount = parseFloat(amountStr.replace(',', '.'));
+    return {
+      id: row[0],
+      date: row[1],
+      type: row[2],
+      category: row[3],
+      amount: isNaN(amount) ? 0 : amount,
+      comment: row[5],
+    };
+  });
 
   const totalIncome = transactions.filter(t => t.type === 'Доход').reduce((s, t) => s + t.amount, 0);
   const totalExpense = transactions.filter(t => t.type === 'Расход').reduce((s, t) => s + t.amount, 0);
+
   res.json({
     transactions,
     totalIncome,
@@ -400,36 +406,30 @@ app.get('/api/finance', async (req, res) => {
 app.post('/api/transactions', authenticateToken, async (req, res) => {
   const { type, category, amount, comment, date } = req.body;
 
-  // === ПРЕОБРАЗОВАНИЕ СУММЫ В ЧИСЛО ===
+  // Преобразуем сумму в число (заменяем запятую на точку)
   let numericAmount;
   if (typeof amount === 'string') {
-    // Заменяем запятую на точку и парсим
     numericAmount = parseFloat(amount.replace(',', '.'));
   } else {
     numericAmount = parseFloat(amount);
   }
 
-  // Проверяем, что сумма положительная и не NaN
   if (isNaN(numericAmount) || numericAmount <= 0) {
     return res.status(400).json({ error: 'Сумма должна быть положительным числом (например, 10.50)' });
   }
 
-  // Получаем следующий ID
   const rows = await getSheetData('ФИНАНСЫ!A:A');
   let lastId = 0;
   rows.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
   const newId = lastId + 1;
-
-  // Формируем дату
   const now = date ? new Date(date).toISOString() : new Date().toISOString();
 
-  // Сохраняем транзакцию с числовой суммой
   const success = await appendRow('ФИНАНСЫ!A:F', [
     newId,
     now,
     type,
     category,
-    numericAmount,  // ← теперь это число
+    numericAmount,  // ← передаём число
     comment || ''
   ]);
 
