@@ -88,8 +88,13 @@ async function updateRow(range, rowNumber, values) {
 }
 
 async function deleteRow(sheetName, rowNumber) {
+  console.log(`🔄 deleteRow: лист="${sheetName}", строка=${rowNumber}`);
   const sheetId = await getSheetId(sheetName);
-  if (!sheetId) return false;
+  if (!sheetId) {
+    console.error(`❌ Не найден sheetId для "${sheetName}"`);
+    return false;
+  }
+  console.log(`✅ sheetId = ${sheetId}`);
   try {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: SPREADSHEET_ID,
@@ -106,9 +111,10 @@ async function deleteRow(sheetName, rowNumber) {
         }]
       }
     });
+    console.log(`✅ Строка ${rowNumber} удалена`);
     return true;
   } catch (err) {
-    console.error(`Ошибка удаления строки ${rowNumber}:`, err.message);
+    console.error(`❌ Ошибка удаления строки ${rowNumber}:`, err.message);
     return false;
   }
 }
@@ -936,22 +942,32 @@ app.put('/api/transactions/:id', authenticateToken, async (req, res) => {
 
 app.delete('/api/transactions/:id', authenticateToken, async (req, res) => {
   const transId = parseInt(req.params.id);
-  const rows = await getSheetData('ФИНАНСЫ!A:A');
+  console.log(`🗑️ Запрос на удаление транзакции ${transId}`);
+
+  // Читаем все строки листа ФИНАНСЫ
+  const rows = await getSheetData('ФИНАНСЫ!A2:G');
   let rowIndex = -1;
+  let foundRow = null;
   for (let i = 0; i < rows.length; i++) {
-    if (parseInt(rows[i][0]) === transId) {
-      rowIndex = i + 2;
+    const rowId = parseInt(rows[i][0]);
+    if (rowId === transId) {
+      rowIndex = i + 2; // +2 потому что строка 1 – заголовок, i начинается с 0
+      foundRow = rows[i];
       break;
     }
   }
+
   if (rowIndex === -1) {
     console.log(`❌ Транзакция ${transId} не найдена в таблице`);
     return res.status(404).json({ error: 'Транзакция не найдена' });
   }
-  console.log(`🗑️ Удаление строки ${rowIndex} (транзакция ${transId})`);
+
+  console.log(`✅ Найдена строка ${rowIndex}:`, foundRow);
+
+  // Пытаемся удалить
   const success = await deleteRow('ФИНАНСЫ', rowIndex);
   if (success) {
-    console.log(`✅ Транзакция ${transId} удалена`);
+    console.log(`✅ Транзакция ${transId} успешно удалена`);
     res.json({ success: true });
   } else {
     console.log(`❌ Ошибка удаления транзакции ${transId}`);
