@@ -944,10 +944,19 @@ app.delete('/api/transactions/:id', authenticateToken, async (req, res) => {
       break;
     }
   }
-  if (rowIndex === -1) return res.status(404).json({ error: 'Транзакция не найдена' });
+  if (rowIndex === -1) {
+    console.log(`❌ Транзакция ${transId} не найдена в таблице`);
+    return res.status(404).json({ error: 'Транзакция не найдена' });
+  }
+  console.log(`🗑️ Удаление строки ${rowIndex} (транзакция ${transId})`);
   const success = await deleteRow('ФИНАНСЫ', rowIndex);
-  if (success) res.json({ success: true });
-  else res.status(500).json({ error: 'Ошибка удаления транзакции' });
+  if (success) {
+    console.log(`✅ Транзакция ${transId} удалена`);
+    res.json({ success: true });
+  } else {
+    console.log(`❌ Ошибка удаления транзакции ${transId}`);
+    res.status(500).json({ error: 'Ошибка удаления транзакции' });
+  }
 });
 
 // ---------- ИСТОРИЯ ЗАКАЗОВ ----------
