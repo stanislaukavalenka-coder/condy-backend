@@ -399,14 +399,45 @@ app.get('/api/finance', async (req, res) => {
 
 app.post('/api/transactions', authenticateToken, async (req, res) => {
   const { type, category, amount, comment, date } = req.body;
+
+  // === ПРЕОБРАЗОВАНИЕ СУММЫ В ЧИСЛО ===
+  let numericAmount;
+  if (typeof amount === 'string') {
+    // Заменяем запятую на точку и парсим
+    numericAmount = parseFloat(amount.replace(',', '.'));
+  } else {
+    numericAmount = parseFloat(amount);
+  }
+
+  // Проверяем, что сумма положительная и не NaN
+  if (isNaN(numericAmount) || numericAmount <= 0) {
+    return res.status(400).json({ error: 'Сумма должна быть положительным числом (например, 10.50)' });
+  }
+
+  // Получаем следующий ID
   const rows = await getSheetData('ФИНАНСЫ!A:A');
   let lastId = 0;
   rows.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
   const newId = lastId + 1;
+
+  // Формируем дату
   const now = date ? new Date(date).toISOString() : new Date().toISOString();
-  const success = await appendRow('ФИНАНСЫ!A:F', [newId, now, type, category, amount, comment]);
-  if (success) res.json({ success: true });
-  else res.status(500).json({ error: 'Ошибка добавления транзакции' });
+
+  // Сохраняем транзакцию с числовой суммой
+  const success = await appendRow('ФИНАНСЫ!A:F', [
+    newId,
+    now,
+    type,
+    category,
+    numericAmount,  // ← теперь это число
+    comment || ''
+  ]);
+
+  if (success) {
+    res.json({ success: true });
+  } else {
+    res.status(500).json({ error: 'Ошибка добавления транзакции' });
+  }
 });
 
 // ---------- АВТОРИЗАЦИЯ ----------
