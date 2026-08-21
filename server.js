@@ -383,7 +383,7 @@ app.get('/api/recipes', async (req, res) => {
 // ---------- ФИНАНСЫ ----------
 app.get('/api/finance', async (req, res) => {
   const { startDate, endDate } = req.query;
-  const rows = await getSheetData('ФИНАНСЫ!A2:F');
+  const rows = await getSheetData('ФИНАНСЫ!A2:G');
   let transactions = rows.map(row => {
     const amountStr = row[4] || '0';
     // Заменяем запятую на точку и парсим как число
@@ -395,6 +395,7 @@ app.get('/api/finance', async (req, res) => {
       category: row[3],
       amount: isNaN(amount) ? 0 : amount,
       comment: row[5],
+      orderId: row[6] ? parseInt(row[6]) : null,
     };
   });
 
