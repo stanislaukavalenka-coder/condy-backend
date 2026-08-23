@@ -548,7 +548,7 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
     recipesData.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
     const newRecipeId = lastId + 1;
 
-    await appendRow('РЕЦЕПТЫ!A:E', [newRecipeId, name, recipeYield, '', '']);
+    await appendRow('РЕЦЕПТЫ!A:E', [newRecipeId, name, recipeYield, cost || '', '']);
 
     const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
     const ingByName = new Map();
