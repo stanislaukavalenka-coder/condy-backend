@@ -594,6 +594,114 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
   }
 });
 
+// PUT /api/recipes/:id – обновление рецепта
+app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
+  const recipeId = parseInt(req.params.id);
+  const { name, yield: recipeYield, ingredients, cost } = req.body;
+
+  if (!name || !recipeYield || !Array.isArray(ingredients) || ingredients.length === 0) {
+    return res.status(400).json({ error: 'Неполные данные' });
+  }
+
+  try {
+    // 1. Обновить основную информацию в РЕЦЕПТЫ
+    const recipesData = await getSheetData('РЕЦЕПТЫ!A:E');
+    let rowIndex = -1;
+    for (let i = 0; i < recipesData.length; i++) {
+      if (parseInt(recipesData[i][0]) === recipeId) {
+        rowIndex = i + 2;
+        break;
+      }
+    }
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: 'Рецепт не найден' });
+    }
+    // Обновляем строку: [id, name, yield, cost, '']
+    await updateRow('РЕЦЕПТЫ', rowIndex, [recipeId, name, recipeYield, cost || '', '']);
+
+    // 2. Удалить старые ингредиенты из СОСТАВ_РЕЦЕПТА
+    const compositionData = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
+    const rowsToDelete = [];
+    for (let i = 0; i < compositionData.length; i++) {
+      if (parseInt(compositionData[i][0]) === recipeId) {
+        rowsToDelete.push(i + 2);
+      }
+    }
+    // Удаляем снизу вверх
+    for (const row of rowsToDelete.reverse()) {
+      await deleteRow('СОСТАВ_РЕЦЕПТА', row);
+    }
+
+    // 3. Добавить новые ингредиенты (создавая новые ингредиенты, если их нет)
+    const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
+    const ingByName = new Map();
+    let maxIngId = 0;
+    ingData.forEach(ing => {
+      const id = parseInt(ing[0]);
+      ingByName.set(ing[1], id);
+      if (id > maxIngId) maxIngId = id;
+    });
+
+    for (const ing of ingredients) {
+      let ingId = ingByName.get(ing.name);
+      if (!ingId) {
+        maxIngId++;
+        ingId = maxIngId;
+        const defaultUnit = 'г';
+        const defaultPrice = 0;
+        await appendRow('ИНГРЕДИЕНТЫ!A:E', [ingId, ing.name, 'Автосоздан', defaultUnit, defaultPrice]);
+        await appendRow('СКЛАД!A:D', [ingId, ing.name, 0, 0]);
+        ingByName.set(ing.name, ingId);
+      }
+      // Добавляем связь
+      await appendRow('СОСТАВ_РЕЦЕПТА!A:C', [recipeId, ingId, ing.amountG]);
+    }
+
+    res.json({ success: true, message: 'Рецепт обновлён' });
+  } catch (err) {
+    console.error('Ошибка обновления рецепта:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// DELETE /api/recipes/:id – удаление рецепта
+app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
+  const recipeId = parseInt(req.params.id);
+
+  try {
+    // 1. Удалить ингредиенты из СОСТАВ_РЕЦЕПТА
+    const compositionData = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
+    const rowsToDelete = [];
+    for (let i = 0; i < compositionData.length; i++) {
+      if (parseInt(compositionData[i][0]) === recipeId) {
+        rowsToDelete.push(i + 2);
+      }
+    }
+    for (const row of rowsToDelete.reverse()) {
+      await deleteRow('СОСТАВ_РЕЦЕПТА', row);
+    }
+
+    // 2. Удалить сам рецепт из РЕЦЕПТЫ
+    const recipesData = await getSheetData('РЕЦЕПТЫ!A:A');
+    let rowIndex = -1;
+    for (let i = 0; i < recipesData.length; i++) {
+      if (parseInt(recipesData[i][0]) === recipeId) {
+        rowIndex = i + 2;
+        break;
+      }
+    }
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: 'Рецепт не найден' });
+    }
+    await deleteRow('РЕЦЕПТЫ', rowIndex);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Ошибка удаления рецепта:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
 // ---------- ОПЕРАЦИИ СО СКЛАДОМ ----------
 app.post('/api/stock/transaction', authenticateToken, async (req, res) => {
   const { materialName, operation, quantity, comment } = req.body;
