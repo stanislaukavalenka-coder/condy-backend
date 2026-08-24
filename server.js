@@ -258,7 +258,8 @@ app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
       req.user.userId,
       req.user.name,
       recipeData,
-      ingredients   // массив объектов { name, amountG }
+      ingredients,    // массив объектов { name, amountG }
+      'updated'
     );
 
     res.json({ success: true, message: 'Рецепт обновлён' });
@@ -595,7 +596,8 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
       req.user.userId,
       req.user.name,
       recipeData,
-      ingredients   // массив объектов { name, amountG }
+      ingredients, // массив объектов { name, amountG }
+      'created'   
     );
 
     // 7. Формируем ответ
@@ -699,8 +701,54 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
   const recipeId = parseInt(req.params.id);
 
   try {
-    // 1. Удалить ингредиенты из СОСТАВ_РЕЦЕПТА
+    // 1. Получить текущие данные рецепта (чтобы сохранить в истории)
+    const recipesData = await getSheetData('РЕЦЕПТЫ!A:E');
+    let recipeRow = null;
+    let rowIndex = -1;
+    for (let i = 0; i < recipesData.length; i++) {
+      if (parseInt(recipesData[i][0]) === recipeId) {
+        recipeRow = recipesData[i];
+        rowIndex = i + 2;
+        break;
+      }
+    }
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: 'Рецепт не найден' });
+    }
+
+    // 2. Получить ингредиенты рецепта
     const compositionData = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
+    const ingredients = [];
+    for (const row of compositionData) {
+      if (parseInt(row[0]) === recipeId) {
+        const ingId = parseInt(row[1]);
+        const amountG = parseFloat(row[2]);
+        // Получим имя ингредиента
+        const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
+        const ing = ingData.find(ingRow => parseInt(ingRow[0]) === ingId);
+        ingredients.push({
+          name: ing ? ing[1] : `Ингредиент ID ${ingId}`,
+          amountG: amountG
+        });
+      }
+    }
+
+    // 3. Сохранить снапшот с действием 'deleted'
+    const recipeData = {
+      name: recipeRow[1],
+      yield: parseFloat(recipeRow[2]),
+      cost: recipeRow[4] || ''
+    };
+    await saveRecipeSnapshot(
+      recipeId,
+      req.user.userId,
+      req.user.name,
+      recipeData,
+      ingredients,
+      'deleted'
+    );
+
+    // 4. Удалить ингредиенты из СОСТАВ_РЕЦЕПТА
     const rowsToDelete = [];
     for (let i = 0; i < compositionData.length; i++) {
       if (parseInt(compositionData[i][0]) === recipeId) {
@@ -711,18 +759,7 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
       await deleteRow('СОСТАВ_РЕЦЕПТА', row);
     }
 
-    // 2. Удалить сам рецепт из РЕЦЕПТЫ
-    const recipesData = await getSheetData('РЕЦЕПТЫ!A:A');
-    let rowIndex = -1;
-    for (let i = 0; i < recipesData.length; i++) {
-      if (parseInt(recipesData[i][0]) === recipeId) {
-        rowIndex = i + 2;
-        break;
-      }
-    }
-    if (rowIndex === -1) {
-      return res.status(404).json({ error: 'Рецепт не найден' });
-    }
+    // 5. Удалить сам рецепт из РЕЦЕПТЫ
     await deleteRow('РЕЦЕПТЫ', rowIndex);
 
     res.json({ success: true });
@@ -731,7 +768,6 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
-
 // ---------- ОПЕРАЦИИ СО СКЛАДОМ ----------
 app.post('/api/stock/transaction', authenticateToken, async (req, res) => {
   const { materialName, operation, quantity, comment } = req.body;
@@ -1264,15 +1300,15 @@ async function saveOrderSnapshot(orderId, userId, userName, products) {
 }
 
 // ---------- СОХРАНЕНИЕ СНАПШОТА РЕЦЕПТА ----------
-async function saveRecipeSnapshot(recipeId, userId, userName, recipeData, ingredients) {
-  // recipeData: { name, yield, cost }
+async function saveRecipeSnapshot(recipeId, userId, userName, recipeData, ingredients, action) {
+  // action: 'created', 'updated', 'deleted'
   const now = new Date().toISOString();
   const ingredientsJson = JSON.stringify(ingredients.map(ing => ({
     name: ing.name,
     amountG: ing.amountG
   })));
 
-  await appendRow('ИСТОРИЯ_РЕЦЕПТОВ_СНАПШОТЫ!A:H', [
+  await appendRow('ИСТОРИЯ_РЕЦЕПТОВ_СНАПШОТЫ!A:I', [
     recipeId,
     now,
     userId,
@@ -1280,7 +1316,8 @@ async function saveRecipeSnapshot(recipeId, userId, userName, recipeData, ingred
     recipeData.name,
     recipeData.yield,
     recipeData.cost || '',
-    ingredientsJson
+    ingredientsJson,
+    action   
   ]);
 }
 
