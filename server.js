@@ -537,7 +537,7 @@ app.post('/api/recipes/calculate', async (req, res) => {
 });
 
 app.post('/api/recipes', authenticateToken, async (req, res) => {
-  const { name, yield: recipeYield, ingredients } = req.body;
+  const { name, yield: recipeYield, ingredients, cost } = req.body;  // ← добавил cost
   if (!name || !recipeYield || !Array.isArray(ingredients) || ingredients.length === 0) {
     return res.status(400).json({ error: 'Неполные данные' });
   }
@@ -590,7 +590,7 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
     res.json({ success: true, message });
   } catch (err) {
     console.error('Ошибка создания рецепта:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
 
