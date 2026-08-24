@@ -371,8 +371,8 @@ app.post('/api/stock', authenticateToken, async (req, res) => {
 
 // ---------- РЕЦЕПТЫ ----------
 app.get('/api/recipes', async (req, res) => {
-  const rows = await getSheetData('РЕЦЕПТЫ!A2:D');
-  const recipes = rows.map(row => ({ id: row[0], name: row[1], yield: row[2], cost: row[3] }));
+  const rows = await getSheetData('РЕЦЕПТЫ!A2:E');
+  const recipes = rows.map(row => ({ id: row[0], name: row[1], yield: row[2], cost: row[4] }));
   res.json(recipes);
 });
 
@@ -494,7 +494,7 @@ app.post('/api/recipes/calculate', async (req, res) => {
     return res.status(400).json({ error: 'recipeId и desiredWeight обязательны' });
   }
   try {
-    const recipes = await getSheetData('РЕЦЕПТЫ!A2:D');
+    const recipes = await getSheetData('РЕЦЕПТЫ!A2:E'); // ← теперь A:E
     const recipe = recipes.find(r => parseInt(r[0]) === recipeId);
     if (!recipe) return res.status(404).json({ error: 'Рецепт не найден' });
     const recipeYield = parseFloat(recipe[2]);
@@ -548,7 +548,7 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
     const newRecipeId = lastId + 1;
 
     // 2. Добавляем запись в РЕЦЕПТЫ (A:E: ID, Название, Выход_г, Себестоимость, Комментарии)
-    await appendRow('РЕЦЕПТЫ!A:E', [newRecipeId, name, recipeYield, cost || '', '']);
+    await appendRow('РЕЦЕПТЫ!A:E', [newRecipeId, name, recipeYield, '', cost || '']);
 
     // 3. Получаем существующие ингредиенты для поиска по имени
     const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
@@ -633,8 +633,14 @@ app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
     if (rowIndex === -1) {
       return res.status(404).json({ error: 'Рецепт не найден' });
     }
-    // Обновляем строку: [id, name, yield, cost, '']
-    await updateRow('РЕЦЕПТЫ', rowIndex, [recipeId, name, recipeYield, cost || '', '']);
+    // Обновляем строку: [id, name, yield, '', cost]
+    await updateRow('РЕЦЕПТЫ', rowIndex, [
+      recipeId,
+      name,
+      recipeYield,
+      '',               // колонка D – себестоимость (пока пусто)
+      cost || ''        // колонка E – описание
+    ]);
 
     // 2. Удалить старые ингредиенты из СОСТАВ_РЕЦЕПТА
     const compositionData = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
@@ -644,12 +650,11 @@ app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
         rowsToDelete.push(i + 2);
       }
     }
-    // Удаляем снизу вверх
     for (const row of rowsToDelete.reverse()) {
       await deleteRow('СОСТАВ_РЕЦЕПТА', row);
     }
 
-    // 3. Добавить новые ингредиенты (создавая новые ингредиенты, если их нет)
+    // 3. Добавить новые ингредиенты
     const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
     const ingByName = new Map();
     let maxIngId = 0;
@@ -670,9 +675,18 @@ app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
         await appendRow('СКЛАД!A:D', [ingId, ing.name, 0, 0]);
         ingByName.set(ing.name, ingId);
       }
-      // Добавляем связь
       await appendRow('СОСТАВ_РЕЦЕПТА!A:C', [recipeId, ingId, ing.amountG]);
     }
+
+    // 4. Сохраняем снапшот в историю
+    const recipeData = { name, yield: recipeYield, cost: cost || '' };
+    await saveRecipeSnapshot(
+      recipeId,
+      req.user.userId,
+      req.user.name,
+      recipeData,
+      ingredients
+    );
 
     res.json({ success: true, message: 'Рецепт обновлён' });
   } catch (err) {
@@ -680,7 +694,6 @@ app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
-
 // DELETE /api/recipes/:id – удаление рецепта
 app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
   const recipeId = parseInt(req.params.id);
