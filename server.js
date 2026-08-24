@@ -188,88 +188,84 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   res.json({ success: true, orderId: newId });
 });
 
-app.put('/api/orders/:id', authenticateToken, async (req, res) => {
-  const orderId = parseInt(req.params.id);
-  const updates = req.body;
-  console.log('📥 Получен запрос на обновление заказа:', req.body);
+app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
+  const recipeId = parseInt(req.params.id);
+  const { name, yield: recipeYield, ingredients, cost } = req.body;
 
-  const rows = await getSheetData('ЗАКАЗЫ!A2:I');
-  let rowIndex = -1;
-  let oldRow = null;
-  for (let i = 0; i < rows.length; i++) {
-    if (parseInt(rows[i][0]) === orderId) {
-      rowIndex = i + 2;
-      oldRow = rows[i];
-      break;
+  // Проверка обязательных полей
+  if (!name || !recipeYield || !Array.isArray(ingredients) || ingredients.length === 0) {
+    return res.status(400).json({ error: 'Неполные данные' });
+  }
+
+  try {
+    // 1. Обновить основную информацию в РЕЦЕПТЫ
+    const recipesData = await getSheetData('РЕЦЕПТЫ!A:E');
+    let rowIndex = -1;
+    for (let i = 0; i < recipesData.length; i++) {
+      if (parseInt(recipesData[i][0]) === recipeId) {
+        rowIndex = i + 2;
+        break;
+      }
     }
-  }
-  if (rowIndex === -1) return res.status(404).json({ error: 'Заказ не найден' });
-
-  const oldStatus = oldRow[4];
-  const newStatus = updates.status;
-  const newPrice = updates.price !== undefined ? parseFloat(updates.price) : parseFloat(oldRow[3]);
-
-  console.log('🔍 Полученные данные клиента из запроса:', {
-    clientName: updates.clientName,
-    clientPhone: updates.clientPhone,
-    clientAddress: updates.clientAddress
-  });
-  let finalClientId = oldRow[2] && oldRow[2] !== '' ? parseInt(oldRow[2]) : null;
-
-  const hasName = updates.clientName !== undefined;
-  const hasPhone = updates.clientPhone !== undefined;
-  const hasAddress = updates.clientAddress !== undefined;
-
-  if (hasName || hasPhone || hasAddress) {
-    let newName = hasName ? (updates.clientName ? updates.clientName.trim() : null) : null;
-    let newPhone = hasPhone ? updates.clientPhone.trim() : null;
-    let newAddress = hasAddress ? updates.clientAddress.trim() : null;
-
-    if (newName === '' || newName === 'Аноним') newName = null;
-    if (newPhone === '' || newPhone === 'не указан') newPhone = null;
-    if (newAddress === '') newAddress = null;
-
-    if (newName === null && newPhone === null && newAddress === null) {
-      finalClientId = null;
-      console.log('Все поля клиента пусты – отвязываем заказ');
-    } else {
-      console.log('Ищем/создаём клиента с данными:', { newName, newPhone, newAddress });
-      finalClientId = await findOrCreateClient(newName, newPhone, newAddress);
-      console.log('Результат findOrCreateClient: clientId =', finalClientId);
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: 'Рецепт не найден' });
     }
+    // Обновляем строку: [id, name, yield, cost, '']
+    await updateRow('РЕЦЕПТЫ', rowIndex, [recipeId, name, recipeYield, cost || '', '']);
+
+    // 2. Удалить старые ингредиенты из СОСТАВ_РЕЦЕПТА
+    const compositionData = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
+    const rowsToDelete = [];
+    for (let i = 0; i < compositionData.length; i++) {
+      if (parseInt(compositionData[i][0]) === recipeId) {
+        rowsToDelete.push(i + 2);
+      }
+    }
+    // Удаляем снизу вверх
+    for (const row of rowsToDelete.reverse()) {
+      await deleteRow('СОСТАВ_РЕЦЕПТА', row);
+    }
+
+    // 3. Добавить новые ингредиенты (создавая новые ингредиенты, если их нет)
+    const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
+    const ingByName = new Map();
+    let maxIngId = 0;
+    ingData.forEach(ing => {
+      const id = parseInt(ing[0]);
+      ingByName.set(ing[1], id);
+      if (id > maxIngId) maxIngId = id;
+    });
+
+    for (const ing of ingredients) {
+      let ingId = ingByName.get(ing.name);
+      if (!ingId) {
+        maxIngId++;
+        ingId = maxIngId;
+        const defaultUnit = 'г';
+        const defaultPrice = 0;
+        await appendRow('ИНГРЕДИЕНТЫ!A:E', [ingId, ing.name, 'Автосоздан', defaultUnit, defaultPrice]);
+        await appendRow('СКЛАД!A:D', [ingId, ing.name, 0, 0]);
+        ingByName.set(ing.name, ingId);
+      }
+      // Добавляем связь рецепт → ингредиент
+      await appendRow('СОСТАВ_РЕЦЕПТА!A:C', [recipeId, ingId, ing.amountG]);
+    }
+
+    // 4. Сохраняем снапшот в историю (новое!)
+    const recipeData = { name, yield: recipeYield, cost: cost || '' };
+    await saveRecipeSnapshot(
+      recipeId,
+      req.user.userId,
+      req.user.name,
+      recipeData,
+      ingredients   // массив объектов { name, amountG }
+    );
+
+    res.json({ success: true, message: 'Рецепт обновлён' });
+  } catch (err) {
+    console.error('Ошибка обновления рецепта:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
-
-  const newRow = [
-    Number(oldRow[0]),
-    oldRow[1],
-    finalClientId,
-    newPrice,
-    newStatus !== undefined ? newStatus : oldRow[4],
-    updates.details !== undefined ? updates.details : oldRow[5],
-    updates.delivery !== undefined ? updates.delivery : oldRow[6],
-    updates.executionDate !== undefined ? updates.executionDate : oldRow[7],
-    req.user.userId,
-  ];
-
-  const success = await updateRow('ЗАКАЗЫ', rowIndex, newRow);
-  if (!success) return res.status(500).json({ error: 'Ошибка обновления заказа' });
-
-  const shouldCreate = (oldStatus !== 'оплачен' && oldStatus !== 'завершен') &&
-                       (newStatus === 'оплачен' || newStatus === 'завершен');
-  const shouldDelete =
-    (oldStatus === 'оплачен' && newStatus !== 'оплачен' && newStatus !== 'завершен') ||
-    (oldStatus === 'завершен' && (newStatus === 'в работе' || newStatus === 'отменён'));
-
-  if (shouldCreate) {
-    await createTransactionForOrder(orderId, newPrice, finalClientId);
-  } else if (shouldDelete) {
-    await deleteTransactionByOrderId(orderId);
-  }
-
-  const products = await getOrderProductsWithNames(orderId);
-  await saveOrderSnapshot(orderId, req.user.userId, req.user.name, products);
-  console.log('✅ Заказ обновлён, новый clientId =', finalClientId);
-  res.json({ success: true });
 });
 
 app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
@@ -537,19 +533,24 @@ app.post('/api/recipes/calculate', async (req, res) => {
 });
 
 app.post('/api/recipes', authenticateToken, async (req, res) => {
-  const { name, yield: recipeYield, ingredients, cost } = req.body;  // ← добавил cost
+  const { name, yield: recipeYield, ingredients, cost } = req.body;
+  
+  // Проверка обязательных полей
   if (!name || !recipeYield || !Array.isArray(ingredients) || ingredients.length === 0) {
     return res.status(400).json({ error: 'Неполные данные' });
   }
 
   try {
+    // 1. Получаем следующий ID для рецепта
     const recipesData = await getSheetData('РЕЦЕПТЫ!A:A');
     let lastId = 0;
     recipesData.forEach(row => { const id = parseInt(row[0]); if (id > lastId) lastId = id; });
     const newRecipeId = lastId + 1;
 
+    // 2. Добавляем запись в РЕЦЕПТЫ (A:E: ID, Название, Выход_г, Себестоимость, Комментарии)
     await appendRow('РЕЦЕПТЫ!A:E', [newRecipeId, name, recipeYield, cost || '', '']);
 
+    // 3. Получаем существующие ингредиенты для поиска по имени
     const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
     const ingByName = new Map();
     let maxIngId = 0;
@@ -559,12 +560,14 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
       if (id > maxIngId) maxIngId = id;
     });
 
+    // 4. Обрабатываем каждый ингредиент из запроса
     const compositionRows = [];
     const newIngredients = [];
 
     for (const ing of ingredients) {
       let ingId = ingByName.get(ing.name);
       if (!ingId) {
+        // Создаём новый ингредиент, если его нет
         maxIngId++;
         ingId = maxIngId;
         const defaultUnit = 'г';
@@ -574,20 +577,34 @@ app.post('/api/recipes', authenticateToken, async (req, res) => {
         ingByName.set(ing.name, ingId);
         newIngredients.push(ing.name);
       }
+      // Сохраняем связь рецепт → ингредиент с количеством
       compositionRows.push([newRecipeId, ingId, ing.amountG]);
     }
 
+    // 5. Записываем все связи в СОСТАВ_РЕЦЕПТА
     if (compositionRows.length > 0) {
       for (const row of compositionRows) {
         await appendRow('СОСТАВ_РЕЦЕПТА!A:C', row);
       }
     }
 
+    // 6. Сохраняем снапшот в историю (вызов функции, которую мы добавили ранее)
+    const recipeData = { name, yield: recipeYield, cost: cost || '' };
+    await saveRecipeSnapshot(
+      newRecipeId,
+      req.user.userId,
+      req.user.name,
+      recipeData,
+      ingredients   // массив объектов { name, amountG }
+    );
+
+    // 7. Формируем ответ
     let message = `Рецепт "${name}" добавлен с ID ${newRecipeId}.`;
     if (newIngredients.length > 0) {
       message += `\n➕ Автоматически добавлены ингредиенты: ${newIngredients.join(', ')} (цена 0, ед.изм. "г")`;
     }
     res.json({ success: true, message });
+
   } catch (err) {
     console.error('Ошибка создания рецепта:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
@@ -1230,6 +1247,27 @@ async function saveOrderSnapshot(orderId, userId, userName, products) {
     orderRow[7],
     userName,
     productsJson
+  ]);
+}
+
+// ---------- СОХРАНЕНИЕ СНАПШОТА РЕЦЕПТА ----------
+async function saveRecipeSnapshot(recipeId, userId, userName, recipeData, ingredients) {
+  // recipeData: { name, yield, cost }
+  const now = new Date().toISOString();
+  const ingredientsJson = JSON.stringify(ingredients.map(ing => ({
+    name: ing.name,
+    amountG: ing.amountG
+  })));
+
+  await appendRow('ИСТОРИЯ_РЕЦЕПТОВ_СНАПШОТЫ!A:H', [
+    recipeId,
+    now,
+    userId,
+    userName || '',
+    recipeData.name,
+    recipeData.yield,
+    recipeData.cost || '',
+    ingredientsJson
   ]);
 }
 
