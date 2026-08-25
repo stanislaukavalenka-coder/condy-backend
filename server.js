@@ -188,86 +188,83 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   res.json({ success: true, orderId: newId });
 });
 
-app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
-  const recipeId = parseInt(req.params.id);
-  const { name, yield: recipeYield, ingredients, cost } = req.body;
+app.put('/api/orders/:id', authenticateToken, async (req, res) => {
+  const orderId = parseInt(req.params.id);
+  const updates = req.body;
+  console.log('📥 Получен запрос на обновление заказа:', req.body);
 
-  // Проверка обязательных полей
-  if (!name || !recipeYield || !Array.isArray(ingredients) || ingredients.length === 0) {
-    return res.status(400).json({ error: 'Неполные данные' });
+  const rows = await getSheetData('ЗАКАЗЫ!A2:I');
+  let rowIndex = -1;
+  let oldRow = null;
+  for (let i = 0; i < rows.length; i++) {
+    if (parseInt(rows[i][0]) === orderId) {
+      rowIndex = i + 2;
+      oldRow = rows[i];
+      break;
+    }
+  }
+  if (rowIndex === -1) return res.status(404).json({ error: 'Заказ не найден' });
+
+  const oldStatus = oldRow[4];
+  const newStatus = updates.status;
+  const newPrice = updates.price !== undefined ? parseFloat(updates.price) : parseFloat(oldRow[3]);
+
+  let finalClientId = oldRow[2] && oldRow[2] !== '' ? parseInt(oldRow[2]) : null;
+
+  const hasName = updates.clientName !== undefined;
+  const hasPhone = updates.clientPhone !== undefined;
+  const hasAddress = updates.clientAddress !== undefined;
+
+  if (hasName || hasPhone || hasAddress) {
+    let newName = hasName ? (updates.clientName ? updates.clientName.trim() : null) : null;
+    let newPhone = hasPhone ? updates.clientPhone.trim() : null;
+    let newAddress = hasAddress ? updates.clientAddress.trim() : null;
+
+    if (newName === '' || newName === 'Аноним') newName = null;
+    if (newPhone === '' || newPhone === 'не указан') newPhone = null;
+    if (newAddress === '') newAddress = null;
+
+    if (newName === null && newPhone === null && newAddress === null) {
+      finalClientId = null;
+    } else {
+      finalClientId = await findOrCreateClient(newName, newPhone, newAddress);
+    }
   }
 
-  try {
-    // 1. Обновить основную информацию в РЕЦЕПТЫ
-    const recipesData = await getSheetData('РЕЦЕПТЫ!A:E');
-    let rowIndex = -1;
-    for (let i = 0; i < recipesData.length; i++) {
-      if (parseInt(recipesData[i][0]) === recipeId) {
-        rowIndex = i + 2;
-        break;
-      }
-    }
-    if (rowIndex === -1) {
-      return res.status(404).json({ error: 'Рецепт не найден' });
-    }
-    // Обновляем строку: [id, name, yield, cost, '']
-    await updateRow('РЕЦЕПТЫ', rowIndex, [recipeId, name, recipeYield, cost || '', '']);
+  const newRow = [
+    Number(oldRow[0]),
+    oldRow[1],
+    finalClientId,
+    newPrice,
+    newStatus !== undefined ? newStatus : oldRow[4],
+    updates.details !== undefined ? updates.details : oldRow[5],
+    updates.delivery !== undefined ? updates.delivery : oldRow[6],
+    updates.executionDate !== undefined ? updates.executionDate : oldRow[7],
+    req.user.userId,
+  ];
 
-    // 2. Удалить старые ингредиенты из СОСТАВ_РЕЦЕПТА
-    const compositionData = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
-    const rowsToDelete = [];
-    for (let i = 0; i < compositionData.length; i++) {
-      if (parseInt(compositionData[i][0]) === recipeId) {
-        rowsToDelete.push(i + 2);
-      }
-    }
-    // Удаляем снизу вверх
-    for (const row of rowsToDelete.reverse()) {
-      await deleteRow('СОСТАВ_РЕЦЕПТА', row);
-    }
+  const success = await updateRow('ЗАКАЗЫ', rowIndex, newRow);
+  if (!success) return res.status(500).json({ error: 'Ошибка обновления заказа' });
 
-    // 3. Добавить новые ингредиенты (создавая новые ингредиенты, если их нет)
-    const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
-    const ingByName = new Map();
-    let maxIngId = 0;
-    ingData.forEach(ing => {
-      const id = parseInt(ing[0]);
-      ingByName.set(ing[1], id);
-      if (id > maxIngId) maxIngId = id;
-    });
+  // Логика создания/удаления транзакции при изменении статуса
+  const shouldCreate = (oldStatus !== 'оплачен' && oldStatus !== 'завершен') &&
+                       (newStatus === 'оплачен' || newStatus === 'завершен');
+  const shouldDelete =
+    (oldStatus === 'оплачен' && newStatus !== 'оплачен' && newStatus !== 'завершен') ||
+    (oldStatus === 'завершен' && (newStatus === 'в работе' || newStatus === 'отменён'));
 
-    for (const ing of ingredients) {
-      let ingId = ingByName.get(ing.name);
-      if (!ingId) {
-        maxIngId++;
-        ingId = maxIngId;
-        const defaultUnit = 'г';
-        const defaultPrice = 0;
-        await appendRow('ИНГРЕДИЕНТЫ!A:E', [ingId, ing.name, 'Автосоздан', defaultUnit, defaultPrice]);
-        await appendRow('СКЛАД!A:D', [ingId, ing.name, 0, 0]);
-        ingByName.set(ing.name, ingId);
-      }
-      // Добавляем связь рецепт → ингредиент
-      await appendRow('СОСТАВ_РЕЦЕПТА!A:C', [recipeId, ingId, ing.amountG]);
-    }
-
-    // 4. Сохраняем снапшот в историю (новое!)
-    const recipeData = { name, yield: recipeYield, cost: cost || '' };
-    await saveRecipeSnapshot(
-      recipeId,
-      req.user.userId,
-      req.user.name,
-      recipeData,
-      ingredients,    // массив объектов { name, amountG }
-      'updated'
-    );
-
-    res.json({ success: true, message: 'Рецепт обновлён' });
-  } catch (err) {
-    console.error('Ошибка обновления рецепта:', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  if (shouldCreate) {
+    await createTransactionForOrder(orderId, newPrice, finalClientId);
+  } else if (shouldDelete) {
+    await deleteTransactionByOrderId(orderId);
   }
+
+  const products = await getOrderProductsWithNames(orderId);
+  await saveOrderSnapshot(orderId, req.user.userId, req.user.name, products);
+
+  res.json({ success: true });
 });
+
 
 app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   const orderId = parseInt(req.params.id);
@@ -696,7 +693,7 @@ app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
-// DELETE /api/recipes/:id – удаление рецепта
+// DELETE – удаление рецепта
 app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
   const recipeId = parseInt(req.params.id);
 
@@ -1320,6 +1317,30 @@ async function saveRecipeSnapshot(recipeId, userId, userName, recipeData, ingred
     action   
   ]);
 }
+app.get('/api/recipe-history/:recipeId', authenticateToken, async (req, res) => {
+  const recipeId = parseInt(req.params.recipeId);
+  const rows = await getSheetData('ИСТОРИЯ_РЕЦЕПТОВ_СНАПШОТЫ!A2:I');
+  const history = rows
+    .filter(row => parseInt(row[0]) === recipeId)
+    .map(row => {
+      let ingredients = [];
+      try {
+        ingredients = JSON.parse(row[7] || '[]');
+      } catch(e) {}
+      return {
+        changedAt: row[1],
+        userId: parseInt(row[2]),
+        userName: row[3] || 'Система',
+        name: row[4],
+        yield: parseFloat(row[5]),
+        cost: row[6],
+        ingredients: ingredients,
+        action: row[8] || ''
+      };
+    })
+    .sort((a,b) => new Date(b.changedAt) - new Date(a.changedAt));
+  res.json(history);
+});
 
 // ---------- ЕДИНСТВЕННАЯ ФУНКЦИЯ СОЗДАНИЯ ТРАНЗАКЦИИ ----------
 async function createTransactionForOrder(orderId, price, clientId) {
