@@ -710,8 +710,10 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
       }
     }
     if (rowIndex === -1) {
+      console.log(`❌ Рецепт с ID ${recipeId} не найден в РЕЦЕПТЫ`);
       return res.status(404).json({ error: 'Рецепт не найден' });
     }
+    console.log(`✅ Найден рецепт в строке ${rowIndex}:`, recipeRow);
 
     // 2. Получить ингредиенты рецепта
     const compositionData = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
@@ -720,7 +722,6 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
       if (parseInt(row[0]) === recipeId) {
         const ingId = parseInt(row[1]);
         const amountG = parseFloat(row[2]);
-        // Получим имя ингредиента
         const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
         const ing = ingData.find(ingRow => parseInt(ingRow[0]) === ingId);
         ingredients.push({
@@ -752,16 +753,26 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
         rowsToDelete.push(i + 2);
       }
     }
+    console.log(`🗑️ Удаляем ${rowsToDelete.length} связей из СОСТАВ_РЕЦЕПТА`);
     for (const row of rowsToDelete.reverse()) {
-      await deleteRow('СОСТАВ_РЕЦЕПТА', row);
+      const deleted = await deleteRow('СОСТАВ_РЕЦЕПТА', row);
+      if (!deleted) {
+        console.warn(`⚠️ Не удалось удалить строку ${row} из СОСТАВ_РЕЦЕПТА`);
+      }
     }
 
-    // 5. Удалить сам рецепт из РЕЦЕПТЫ
-    await deleteRow('РЕЦЕПТЫ', rowIndex);
+    // 5. Удалить сам рецепт из РЕЦЕПТЫ – ПРОВЕРЯЕМ РЕЗУЛЬТАТ!
+    console.log(`🗑️ Удаляем рецепт из строки ${rowIndex}`);
+    const success = await deleteRow('РЕЦЕПТЫ', rowIndex);
+    if (!success) {
+      console.error(`❌ Не удалось удалить строку ${rowIndex} из РЕЦЕПТЫ`);
+      return res.status(500).json({ error: 'Ошибка удаления рецепта (не удалось удалить строку)' });
+    }
 
+    console.log(`✅ Рецепт ${recipeId} успешно удалён`);
     res.json({ success: true });
   } catch (err) {
-    console.error('Ошибка удаления рецепта:', err);
+    console.error('❌ Ошибка удаления рецепта:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
