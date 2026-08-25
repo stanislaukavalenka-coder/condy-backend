@@ -714,14 +714,22 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
   try {
     // 1. Получаем все строки РЕЦЕПТЫ
     const recipesData = await getSheetData('РЕЦЕПТЫ!A:E');
+    console.log(`📊 В РЕЦЕПТЫ получено ${recipesData.length} строк (без заголовка)`);
+    
+    // Выводим все ID для диагностики
+    console.log('📋 ID рецептов в таблице:', recipesData.map(row => row[0]));
+
     let recipeRow = null;
     let rowIndex = -1;
 
     // Ищем рецепт по ID
     for (let i = 0; i < recipesData.length; i++) {
-      if (parseInt(recipesData[i][0]) === recipeId) {
+      const rowId = parseInt(recipesData[i][0]);
+      console.log(`🔍 Проверяем строку ${i+2}: ID = ${rowId}`);
+      if (rowId === recipeId) {
         recipeRow = recipesData[i];
         rowIndex = i + 2; // +2, потому что строка 1 – заголовок
+        console.log(`✅ Найден рецепт в строке ${rowIndex}`);
         break;
       }
     }
@@ -730,19 +738,6 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
       console.log(`❌ Рецепт с ID ${recipeId} не найден в РЕЦЕПТЫ`);
       return res.status(404).json({ error: 'Рецепт не найден' });
     }
-
-    // === НОВАЯ ПРОВЕРКА ===
-    // Проверяем, что строка с этим индексом действительно содержит наш ID
-    const checkRow = await getSheetData(`РЕЦЕПТЫ!A${rowIndex}:A${rowIndex}`);
-    if (checkRow.length > 0 && parseInt(checkRow[0][0]) !== recipeId) {
-      console.warn(`⚠️ Строка ${rowIndex} содержит ID ${checkRow[0][0]}, а не ${recipeId}. Возможно, в таблице есть пустые строки.`);
-      // Возвращаем ошибку, чтобы не удалить не тот рецепт
-      return res.status(500).json({
-        error: 'Ошибка: найденная строка не соответствует ID рецепта. Проверьте таблицу на наличие пустых строк и удалите их вручную.'
-      });
-    }
-
-    console.log(`✅ Найден рецепт в строке ${rowIndex}:`, recipeRow);
 
     // 2. Получаем ингредиенты рецепта
     const compositionData = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
@@ -759,8 +754,9 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
         });
       }
     }
+    console.log(`📦 Найдено ${ingredients.length} ингредиентов`);
 
-    // 3. Сохраняем снапшот с действием 'deleted'
+    // 3. Сохраняем снапшот
     const recipeData = {
       name: recipeRow[1],
       yield: parseFloat(recipeRow[2]),
@@ -774,35 +770,55 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
       ingredients,
       'deleted'
     );
-    console.log(`✅ Снапшот для удаления сохранён`);
+    console.log(`✅ Снапшот сохранён`);
 
-    // 4. Удаляем связи с ингредиентами из СОСТАВ_РЕЦЕПТА
+    // 4. Удаляем связи с ингредиентами
     const rowsToDelete = [];
     for (let i = 0; i < compositionData.length; i++) {
       if (parseInt(compositionData[i][0]) === recipeId) {
         rowsToDelete.push(i + 2);
       }
     }
+    console.log(`🗑️ Удаляем ${rowsToDelete.length} связей из СОСТАВ_РЕЦЕПТА`);
     for (const row of rowsToDelete.reverse()) {
-      await deleteRow('СОСТАВ_РЕЦЕПТА', row);
+      const deleted = await deleteRow('СОСТАВ_РЕЦЕПТА', row);
+      console.log(`   Строка ${row}: ${deleted ? 'удалена' : 'НЕ УДАЛЕНА'}`);
     }
 
-    // 5. Удаляем сам рецепт из РЕЦЕПТЫ
-    const success = await deleteRow('РЕЦЕПТЫ', rowIndex);
-    if (!success) {
-      // Проверяем, остался ли рецепт
-      const checkData = await getSheetData('РЕЦЕПТЫ!A:A');
-      let stillExists = false;
-      for (const row of checkData) {
-        if (parseInt(row[0]) === recipeId) {
-          stillExists = true;
-          break;
+    // 5. Удаляем сам рецепт
+    console.log(`🗑️ Удаляем рецепт из строки ${rowIndex} (лист РЕЦЕПТЫ)`);
+    console.log(`📝 Содержимое строки:`, recipeRow);
+    
+    // ПРЯМОЕ УДАЛЕНИЕ ЧЕРЕЗ API — самый надёжный способ
+    try {
+      const sheetId = await getSheetId('РЕЦЕПТЫ');
+      if (!sheetId) {
+        console.error(`❌ Не найден sheetId для РЕЦЕПТЫ`);
+        return res.status(500).json({ error: 'Не найден лист РЕЦЕПТЫ' });
+      }
+      
+      console.log(`✅ sheetId = ${sheetId}`);
+      
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        resource: {
+          requests: [{
+            deleteDimension: {
+              range: {
+                sheetId: sheetId,
+                dimension: 'ROWS',
+                startIndex: rowIndex - 1,
+                endIndex: rowIndex,
+              }
+            }
+          }]
         }
-      }
-      if (stillExists) {
-        console.error(`❌ Рецепт ${recipeId} всё ещё присутствует после удаления!`);
-        return res.status(500).json({ error: 'Не удалось удалить рецепт' });
-      }
+      });
+      console.log(`✅ Строка ${rowIndex} удалена через прямой API`);
+    } catch (deleteErr) {
+      console.error(`❌ Ошибка при прямом удалении:`, deleteErr.message);
+      console.error(`❌ Полная ошибка:`, deleteErr);
+      return res.status(500).json({ error: 'Ошибка удаления: ' + deleteErr.message });
     }
 
     // 6. Проверка: убедимся, что рецепт действительно удалён
@@ -815,14 +831,15 @@ app.delete('/api/recipes/:id', authenticateToken, async (req, res) => {
       }
     }
     if (found) {
-      console.error(`❌ Рецепт ${recipeId} всё ещё присутствует в таблице после удаления!`);
-      return res.status(500).json({ error: 'Рецепт не удалён, попробуйте снова' });
+      console.error(`❌ Рецепт ${recipeId} всё ещё присутствует в таблице!`);
+      return res.status(500).json({ error: 'Рецепт не удалён' });
     }
 
     console.log(`✅ Рецепт ${recipeId} успешно удалён`);
     res.json({ success: true });
   } catch (err) {
     console.error('❌ Ошибка удаления рецепта:', err);
+    console.error('❌ Стек ошибки:', err.stack);
     res.status(500).json({ error: 'Внутренняя ошибка сервера: ' + err.message });
   }
 });
