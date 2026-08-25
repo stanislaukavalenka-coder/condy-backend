@@ -633,29 +633,36 @@ app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
   }
 
   try {
-    // 1. Обновить основную информацию в РЕЦЕПТЫ
-    const recipesData = await getSheetData('РЕЦЕПТЫ!A:E');
+    // 1. Получаем данные РЕЦЕПТЫ (без заголовка)
+    const recipesData = await getSheetData('РЕЦЕПТЫ!A2:E');
     let rowIndex = -1;
+    let oldRow = null;
     for (let i = 0; i < recipesData.length; i++) {
       if (parseInt(recipesData[i][0]) === recipeId) {
-        rowIndex = i + 2;
+        rowIndex = i + 2; // реальный номер строки в таблице
+        oldRow = recipesData[i];
         break;
       }
     }
     if (rowIndex === -1) {
+      console.log(`❌ Рецепт с ID ${recipeId} не найден в РЕЦЕПТЫ`);
       return res.status(404).json({ error: 'Рецепт не найден' });
     }
-    // Обновляем строку: [id, name, yield, '', cost]
+    console.log(`✅ Найден рецепт в строке ${rowIndex}:`, oldRow);
+
+    // 2. ОБНОВЛЯЕМ (НЕ ДОБАВЛЯЕМ) строку в РЕЦЕПТЫ
+    // Колонки: A: ID, B: Название, C: Выход_г, D: Себестоимость, E: Комментарии
     await updateRow('РЕЦЕПТЫ', rowIndex, [
       recipeId,
       name,
       recipeYield,
-      '',               // колонка D – себестоимость (пока пусто)
-      cost || ''        // колонка E – описание
+      oldRow[3] || '',   // сохраняем существующую себестоимость (если есть)
+      cost || ''         // обновляем комментарии (колонка E)
     ]);
+    console.log(`✅ Строка ${rowIndex} обновлена в РЕЦЕПТЫ`);
 
-    // 2. Удалить старые ингредиенты из СОСТАВ_РЕЦЕПТА
-    const compositionData = await getSheetData('СОСТАВ_РЕЦЕПТА!A:C');
+    // 3. Удалить старые ингредиенты из СОСТАВ_РЕЦЕПТА
+    const compositionData = await getSheetData('СОСТАВ_РЕЦЕПТА!A2:C');
     const rowsToDelete = [];
     for (let i = 0; i < compositionData.length; i++) {
       if (parseInt(compositionData[i][0]) === recipeId) {
@@ -665,9 +672,10 @@ app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
     for (const row of rowsToDelete.reverse()) {
       await deleteRow('СОСТАВ_РЕЦЕПТА', row);
     }
+    console.log(`✅ Старые связи из СОСТАВ_РЕЦЕПТА удалены (${rowsToDelete.length} шт)`);
 
-    // 3. Добавить новые ингредиенты
-    const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A:E');
+    // 4. Добавить новые ингредиенты
+    const ingData = await getSheetData('ИНГРЕДИЕНТЫ!A2:E');
     const ingByName = new Map();
     let maxIngId = 0;
     ingData.forEach(ing => {
@@ -681,29 +689,30 @@ app.put('/api/recipes/:id', authenticateToken, async (req, res) => {
       if (!ingId) {
         maxIngId++;
         ingId = maxIngId;
-        const defaultUnit = 'г';
-        const defaultPrice = 0;
-        await appendRow('ИНГРЕДИЕНТЫ!A:E', [ingId, ing.name, 'Автосоздан', defaultUnit, defaultPrice]);
+        await appendRow('ИНГРЕДИЕНТЫ!A:E', [ingId, ing.name, 'Автосоздан', 'г', 0]);
         await appendRow('СКЛАД!A:D', [ingId, ing.name, 0, 0]);
         ingByName.set(ing.name, ingId);
       }
       await appendRow('СОСТАВ_РЕЦЕПТА!A:C', [recipeId, ingId, ing.amountG]);
     }
+    console.log(`✅ Добавлено ${ingredients.length} ингредиентов в СОСТАВ_РЕЦЕПТА`);
 
-    // 4. Сохраняем снапшот в историю
+    // 5. Сохраняем снапшот в историю
     const recipeData = { name, yield: recipeYield, cost: cost || '' };
     await saveRecipeSnapshot(
       recipeId,
       req.user.userId,
       req.user.name,
       recipeData,
-      ingredients
+      ingredients,
+      'updated'
     );
+    console.log(`✅ Снапшот сохранён`);
 
     res.json({ success: true, message: 'Рецепт обновлён' });
   } catch (err) {
-    console.error('Ошибка обновления рецепта:', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    console.error('❌ Ошибка обновления рецепта:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера: ' + err.message });
   }
 });
 // DELETE – удаление рецепта
