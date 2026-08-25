@@ -275,6 +275,32 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const products = await getOrderProductsWithNames(orderId);
   await saveOrderSnapshot(orderId, req.user.userId, req.user.name, products);
 
+  // === ОБНОВЛЕНИЕ ТОВАРОВ ЗАКАЗА ===
+  if (updates.orderProducts !== undefined && Array.isArray(updates.orderProducts)) {
+    // 1. Удалить старые товары
+    const orderProductsRows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
+    const rowsToDelete = [];
+    for (let i = 0; i < orderProductsRows.length; i++) {
+      if (parseInt(orderProductsRows[i][0]) === orderId) {
+        rowsToDelete.push(i + 2);
+      }
+    }
+    for (const row of rowsToDelete.reverse()) {
+      await deleteRow('ЗАКАЗЫ_ТОВАРЫ', row);
+    }
+
+    // 2. Добавить новые товары
+    for (const prod of updates.orderProducts) {
+      await appendRow('ЗАКАЗЫ_ТОВАРЫ!A:D', [
+        orderId,
+        prod.productId,
+        prod.quantity,
+        prod.price
+      ]);
+    }
+    console.log(`✅ Товары заказа ${orderId} обновлены (${updates.orderProducts.length} позиций)`);
+  }
+  
   res.json({ success: true });
 });
 
@@ -312,7 +338,32 @@ app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
 
   const success = await deleteRow('ЗАКАЗЫ', rowIndex);
   if (!success) return res.status(500).json({ error: 'Ошибка удаления заказа' });
+  // === ОБНОВЛЕНИЕ ТОВАРОВ ЗАКАЗА ===
+  // Если в запросе передан массив orderProducts – обновляем товары
+  if (updates.orderProducts !== undefined && Array.isArray(updates.orderProducts)) {
+    // 1. Удалить старые товары
+    const orderProductsRows = await getSheetData('ЗАКАЗЫ_ТОВАРЫ!A2:D');
+    const rowsToDelete = [];
+    for (let i = 0; i < orderProductsRows.length; i++) {
+      if (parseInt(orderProductsRows[i][0]) === orderId) {
+        rowsToDelete.push(i + 2);
+      }
+    }
+    for (const row of rowsToDelete.reverse()) {
+      await deleteRow('ЗАКАЗЫ_ТОВАРЫ', row);
+    }
 
+    // 2. Добавить новые товары
+    for (const prod of updates.orderProducts) {
+      await appendRow('ЗАКАЗЫ_ТОВАРЫ!A:D', [
+        orderId,
+        prod.productId,
+        prod.quantity,
+        prod.price
+      ]);
+    }
+    console.log(`✅ Товары заказа ${orderId} обновлены (${updates.orderProducts.length} позиций)`);
+  }
   res.json({ success: true });
 });
 
